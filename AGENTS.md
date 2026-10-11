@@ -116,10 +116,11 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 
 ## Documentation that changes with the code
 
-- `README.md` and `CHANGELOG.md` do not exist yet; they come once the receiver handles a SET end
-  to end. From then on a new option, alias, subject format or handler is documented in the README
-  in the same change, and the CHANGELOG follows Keep a Changelog.
-- Until then, `scratch/porting.md` records state and decisions (see Porting).
+- `README.md` is the user document: its "State of the port" table says what is done and what comes
+  next, and a new option, alias, subject format or handler is documented there in the same change.
+  Keep its examples compiling against the current API.
+- `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
+  Until then, `scratch/porting.md` records state and decisions (see Porting).
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.
 
 ## Working practice
