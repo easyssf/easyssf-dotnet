@@ -279,10 +279,12 @@ public sealed class SsfRevocationOptions
     public List<string> UserEventTypes { get; } = [];
 
     /// <summary>
-    /// How long the in-memory store remembers a revocation. Must be at least the maximum token or
-    /// cookie lifetime. One hour by default.
+    /// How long a revocation is remembered. Must be at least the maximum lifetime of the access
+    /// tokens and cookies it guards, or a revoked token becomes usable again when the revocation is
+    /// forgotten. 24 hours by default; <c>AddSsfSessionRevocation()</c> refuses a cookie scheme whose
+    /// <c>ExpireTimeSpan</c> is longer.
     /// </summary>
-    public TimeSpan Ttl { get; set; } = TimeSpan.FromHours(1);
+    public TimeSpan Ttl { get; set; } = TimeSpan.FromHours(24);
 
     /// <summary>
     /// The session event types: <see cref="SessionEventTypes"/>, or <see cref="DefaultSessionEventTypes"/>

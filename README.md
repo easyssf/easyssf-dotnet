@@ -202,9 +202,11 @@ builder.Services.AddSsfSessionRevocation();    // signs revoked cookie sessions 
 
 The check reads `iss`, `sub`, `sid` and `iat` from the principal, by their JWT names or the claim
 types ASP.NET Core maps them to; a cookie is compared by the time it was issued. The revocations
-live in the `ISsfTokenRevocationStore`, in memory for `Revocation:Ttl` by default, which must cover
-the longest token or cookie lifetime; the [database stores](#sharing-state-between-instances) share
-them between instances. An
+live in the `ISsfTokenRevocationStore`, in memory for `Revocation:Ttl` (24 hours by default), which
+must cover the longest token or cookie lifetime: a revocation that is forgotten before the token
+expires makes the token usable again. `AddSsfSessionRevocation()` therefore fails the start when the
+cookie's `ExpireTimeSpan` exceeds the TTL, and warns about sliding expiration, which has no bound.
+The [database stores](#sharing-state-between-instances) share the revocations between instances. An
 application that keeps sessions server-side registers an `ISsfSessionTerminator` instead or in
 addition; the receiver then ends the sessions of the event's subject when the event arrives, with
 `SsfSubjectClaimsMatcher` deciding which sessions belong to the subject.
@@ -308,9 +310,9 @@ it.
 | `SetValidation:RequireTypeHeader` | `true` | Requires `typ: secevent+jwt`. |
 | `SetValidation:SubjectCompatibility` | `Strict` | Requires the top-level `sub_id` claim of SSF 1.0. `Legacy` accepts SETs of transmitters following earlier drafts, which put the subject into the event. |
 | `SetValidation:ClockSkew` | `00:01:00` | Tolerance for `iat` in the future. |
+| `SetValidation:AllowAnyAudience` | `false` | Accepts SETs with any `aud` when no audience is configured or known from a stream. For a transmitter that sends no `aud` only; with it the receiver also accepts SETs the transmitter issued for other receivers. |
 | `Push:EndpointPath` | `/ssf/push` | Where `MapSsfPush()` maps the endpoint; a pattern given to `MapSsfPush` wins. |
 | `Push:ExpectedAuthHeader` | | Exact `Authorization` header value the transmitter must send. |
-| `SetValidation:AllowAnyAudience` | `false` | Accepts SETs with any `aud` when no audience is configured or known from a stream. For a transmitter that sends no `aud` only; with it the receiver also accepts SETs the transmitter issued for other receivers. |
 | `Push:DeliveryEndpointUrl` | | How the transmitter reaches the push endpoint, for a stream managed by the receiver. |
 | `Dedup:Enabled` | `true` | |
 | `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |
@@ -325,7 +327,7 @@ it.
 | `Revocation:Enabled` | `true` | Record revocations and reject tokens of revoked sessions and users. |
 | `Revocation:SessionEventTypes` | `CaepSessionRevoked` | Events that revoke the session they name, or the user if they name none. |
 | `Revocation:UserEventTypes` | | Events that revoke the user they name, session or not; `CaepCredentialChange` for cookie sessions. |
-| `Revocation:Ttl` | `01:00:00` | How long a revocation is remembered; at least the longest token or cookie lifetime. |
+| `Revocation:Ttl` | `1.00:00:00` | How long a revocation is remembered; at least the longest access token or cookie lifetime, or a revoked token is accepted again once the revocation is forgotten. `AddSsfSessionRevocation()` refuses to start when the cookie's `ExpireTimeSpan` is longer. |
 | `SessionTermination:Enabled` | `true` | End server-side sessions through the registered `ISsfSessionTerminator`. |
 | `SessionTermination:SessionEventTypes` | `CaepSessionRevoked` | Events that terminate the session (or user sessions) of their subject. |
 | `SessionTermination:UserEventTypes` | `CaepCredentialChange` | Events that terminate all sessions of their subject's user. |

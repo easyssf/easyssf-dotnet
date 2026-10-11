@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 
 using EasySsf.Receiver.AspNetCore;
+using EasySsf.Receiver.Hosting;
 using EasySsf.Testing;
 
 using Microsoft.AspNetCore.Authentication;
@@ -81,6 +82,25 @@ public sealed class RevocationTests : IDisposable
     }
 
     [Fact]
+    public async Task CookiesThatOutliveTheRevocationTtlFailTheStart()
+    {
+        // the default TTL of 24 hours is shorter than the default cookie lifetime of 14 days: a
+        // revoked cookie would be accepted again once the revocation is forgotten
+        SsfReceiverConfigurationException ex = await Assert.ThrowsAsync<SsfReceiverConfigurationException>(() => ReceiverApp.StartAsync(
+            new Dictionary<string, string?>
+            {
+                ["EasySsf:Receiver:TransmitterIssuer"] = _transmitter.Issuer,
+                ["EasySsf:Receiver:ExpectedAudience"] = TestTransmitter.Audience,
+            }, configure: builder =>
+            {
+                builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie();
+                builder.Services.AddSsfSessionRevocation();
+            }, map: web => web.MapSsfPush(), _transmitter));
+        Assert.Contains("EasySsf:Receiver:Revocation:Ttl", ex.Message);
+        Assert.Contains("14.00:00:00", ex.Message);
+    }
+
+    [Fact]
     public async Task RevokedCookieSessionIsSignedOutOnItsNextRequest()
     {
         await using ReceiverApp app = await ReceiverApp.StartAsync(new Dictionary<string, string?>
@@ -88,6 +108,8 @@ public sealed class RevocationTests : IDisposable
             ["EasySsf:Receiver:TransmitterIssuer"] = _transmitter.Issuer,
             ["EasySsf:Receiver:ExpectedAudience"] = TestTransmitter.Audience,
             ["EasySsf:Receiver:Revocation:UserEventTypes:0"] = "CaepCredentialChange",
+            // a revocation must outlive the cookies (14 days by default)
+            ["EasySsf:Receiver:Revocation:Ttl"] = "15.00:00:00",
         }, configure: builder =>
         {
             builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>

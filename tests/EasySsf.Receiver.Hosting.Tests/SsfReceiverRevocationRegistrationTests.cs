@@ -34,7 +34,7 @@ public sealed class SsfReceiverRevocationRegistrationTests : IDisposable
         using ServiceProvider provider = services.BuildServiceProvider();
         ISsfTokenRevocationStore store = provider.GetRequiredService<ISsfTokenRevocationStore>();
         Assert.IsType<InMemorySsfTokenRevocationStore>(store);
-        Assert.Equal(TimeSpan.FromHours(1), ((InMemorySsfTokenRevocationStore)store).Ttl);
+        Assert.Equal(TimeSpan.FromHours(24), ((InMemorySsfTokenRevocationStore)store).Ttl);
 
         string set = _transmitter.Set("CaepSessionRevoked", Complex(IssSub(_transmitter.Issuer, "alice"), Opaque("session-1")));
         Assert.Equal(202, (await provider.GetRequiredService<SsfPushHandler>().HandleAsync(null, Encoding.UTF8.GetBytes(set))).Status);
