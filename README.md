@@ -1,15 +1,12 @@
 # easyssf-dotnet
 
-Building blocks for the
+**The easiest way to make a .NET application an SSF receiver.** easyssf-dotnet receives the
+security events of the
 [OpenID Shared Signals Framework (SSF)](https://openid.net/specs/openid-sharedsignals-framework-1_0.html)
-in .NET, for applications that receive security events: a framework independent **receiver**
-library, with ASP.NET Core integration to follow. A port of
-[easyssf for Java](https://github.com/easyssf/easyssf), which is the reference for protocol
-behaviour and is tested against the OpenID conformance suite.
-
-**Turn a .NET application into an SSF receiver without implementing SET validation, metadata
-discovery, PUSH and POLL delivery, stream management and replay protection yourself.** The goal is
-that reacting to a security event is a handler:
+with CAEP, RISC and SCIM Events, and turns them into what an application needs: rejected access
+tokens, ended sessions, mirrored users, or a handler of your own. SET verification, metadata
+discovery, PUSH and POLL delivery, stream management, replay protection and the state that several
+instances of an application share are the library's job; reacting to an event is a handler:
 
 ```csharp
 builder.AddSsfReceiver().AddEventHandler("CaepSessionRevoked", (context, cancellationToken) =>
@@ -21,14 +18,23 @@ builder.AddSsfReceiver().AddEventHandler("CaepSessionRevoked", (context, cancell
 app.MapSsfPush();
 ```
 
-With the hosting package the transmitter is configuration, see
-[Getting started](#getting-started); without a framework a few lines wire the parts together, see
-[Receiving pushed SETs](#receiving-pushed-sets).
+The common reactions come ready-made: `AddSsfTokenRevocation()` rejects the access tokens of a
+revoked session or user in a JwtBearer scheme, `AddSsfSessionRevocation()` does the same for cookie
+sessions, see [Reacting to revocations](#reacting-to-revocations). With the hosting package the
+transmitter is configuration, see [Getting started](#getting-started); without a framework a few
+lines wire the parts together, see [Receiving pushed SETs](#receiving-pushed-sets).
+
+**Tested against the OpenID Foundation's conformance suite**: the receiver passes the SSF 1.0 and
+CAEP Interoperability Profile receiver test plans with push and poll delivery, and the test harness
+that runs the suite ships with the repository, see [Conformance](#conformance). It is a port of
+[easyssf for Java](https://github.com/easyssf/easyssf), which is the reference for protocol
+behaviour; the two share their test suites, their database tables and their Keycloak setup.
 
 | | |
 |---|---|
-| **Status** | Experimental, pre-alpha: the receiver and its hosting are ported, nothing is on NuGet yet |
-| **.NET** | 10 |
+| **Status** | Experimental, pre-alpha: feature complete relative to the Java library, nothing is on NuGet yet |
+| **.NET** | 10, the current LTS; older runtimes leave support in November 2026 and are not targeted |
+| **Scope** | Receiver only; a transmitter is not planned, `EasySsf.Core` is written so that one could share it |
 | **Package prefix** | `EasySsf` |
 | **License** | Apache-2.0 |
 
@@ -39,10 +45,8 @@ The receiver is ported slice by slice from the Java library, each slice with the
 | | |
 |---|---|
 | Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver, and the examples: a resource server and an OIDC client against Keycloak, and SCIM provisioning |
-| Next | The first release on NuGet |
-| Then | Central package versions and a `CHANGELOG.md` |
-
-A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
+| Next | The first release on NuGet, with a `CHANGELOG.md` |
+| Then | Lease renewal in the database de-duplication store, so that a handler may outlive the lease |
 
 ## Projects
 
@@ -596,8 +600,8 @@ EASYSSF_DATABASE_TESTS=true dotnet test tests/EasySsf.Receiver.Data.Tests   # al
 EASYSSF_CONFORMANCE_TESTS=true dotnet test tests/EasySsf.Conformance.Tests   # the conformance plans, needs Docker
 ```
 
-.NET SDK 10.0.401 or a later feature band (`global.json`). The libraries build with warnings as
-errors and the AOT analysers on. Conventions for contributors and coding agents are in
+.NET SDK 10.0.401 or a later feature band (`global.json`); the libraries target `net10.0` only, the
+current LTS, and build with warnings as errors and the AOT analysers on. Conventions for contributors and coding agents are in
 [AGENTS.md](AGENTS.md), the security policy in [SECURITY.md](SECURITY.md).
 
 ## Relation to the Java library
