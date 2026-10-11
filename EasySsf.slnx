@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EasySsf.Core/EasySsf.Core.csproj" />
+    <Project Path="src/EasySsf.Receiver/EasySsf.Receiver.csproj" />
+    <Project Path="src/EasySsf.Testing/EasySsf.Testing.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EasySsf.Core.Tests/EasySsf.Core.Tests.csproj" />
+    <Project Path="tests/EasySsf.Receiver.Tests/EasySsf.Receiver.Tests.csproj" />
+  </Folder>
+</Solution>
