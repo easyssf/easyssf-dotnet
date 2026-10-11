@@ -31,11 +31,12 @@ order:
 | `src/EasySsf.Receiver.Hosting` | Options bound from `EasySsf:Receiver`, `AddSsfReceiver()`, `SsfTransmitterFactory`, options validation, the hosted service and the health check | Receiver, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
 | `src/EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the push endpoint; `AddSsfTokenRevocation()` and `AddSsfSessionRevocation()`, the JwtBearer and cookie hooks | Hosting, `Microsoft.AspNetCore.App`, `Microsoft.AspNetCore.Authentication.JwtBearer` |
 | `src/EasySsf.Receiver.Data` | The database stores (processed SETs, revocations, poll acknowledgements) in plain SQL over `ISsfDbOperations`, `DbSsfSchema` with the SQL and migrations, `AddDatabaseStores()`, the cleanup hosted service | Hosting, `System.Data.Common` |
+| `src/EasySsf.Testing.Conformance` | The conformance harness: the suite in Testcontainers, its API client, the receiver plans, the scenarios a receiver plays (`ConformanceRun`), the expected outcome per module and `ConformancePlanRunner` | Receiver, Testcontainers |
+| `tests/EasySsf.Conformance.Receiver` | The receiver under test for the suite, an ASP.NET Core application (`CtsApplication`) with the `/cts/*` control endpoints and `/ssf/push`; also runs by hand against a local suite | Testing.Conformance, ASP.NET Core |
 | `tests/EasySsf.*.Tests` | xUnit tests, ported from the Java modules; the AspNetCore tests start Kestrel on a random port, the Data tests run on SQLite files and, opted in, PostgreSQL in Docker | the project under test, Testing |
 
-Planned: `tests/EasySsf.Conformance`, a Keycloak example. New protocol behaviour goes into
-`EasySsf.Receiver`, new vocabulary into `EasySsf.Core`, framework code only into the Hosting,
-AspNetCore and Data projects.
+Planned: a Keycloak example. New protocol behaviour goes into `EasySsf.Receiver`, new vocabulary
+into `EasySsf.Core`, framework code only into the Hosting, AspNetCore and Data projects.
 
 ## Porting
 
@@ -69,6 +70,16 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   the `database` job). The database tests are `[Theory]`s over `TestDatabase.All`, which lists the
   PostgreSQL case only when the variable is set, so nothing is skipped or filtered. Run them when the
   SQL or the schema changes, and say so.
+- The conformance plans (`tests/EasySsf.Conformance.Tests`, the four `...ReceiverConformanceTests`
+  classes) are `[ConformanceTheory]`s, skipped unless `EASYSSF_CONFORMANCE_TESTS` is set; with it,
+  the suite starts in Docker at `https://localhost:18443` and the modules of a plan are discovered
+  from it when the tests are collected. Minutes per plan: run only the plan that covers the behaviour
+  you changed (`--filter "FullyQualifiedName~CaepInterop10PushReceiverConformanceTests"`) and report
+  the suite's result, not only the xUnit outcome. The suite images are named in one place,
+  `ConformanceSettings`, pinned by digest; a module that fails prints the suite's failures and
+  warnings, the receiver's log and a link to the suite's log page. Start from the suite log, the
+  receiver is usually right. The tests of the harness against the `TestTransmitter`
+  (`ConformanceRunLocalTransmitterTests`) need no Docker and run always.
 - **Options bind from configuration with the binding source generator**
   (`EnableConfigurationBindingGenerator`), so the Hosting package stays AOT-safe. Binding adds to
   a list instead of replacing it, so a list setting with a default starts empty and an
@@ -176,8 +187,11 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - CI (`.github/workflows/ci.yml`) runs the cheap checks first: sign-off, then a link and spell
   check of the Markdown files for documentation changes, then formatting, build and tests on
   Ubuntu; Windows and macOS follow only when that passes. A change that touches only `.md` files
-  runs no build at all. `status` is the required check.
+  runs no build at all. `status` is the required check. `conformance.yml` runs the four conformance
+  plans on demand (`workflow_dispatch`), one job per plan.
 - When a change touches verification, push handling or de-duplication, add the negative test
   before the positive one, and run the full test suite, not only the new test.
 - Do not start Docker containers or the examples' Keycloak without checking for an existing
-  compose project of the same name.
+  compose project of the same name. A conformance run of the Java repository next door binds the
+  same ports (suite 18443, receiver 9444); check `docker ps` first and move with `CTS_SUITE_PORT`
+  and `CTS_RECEIVER_PORT` rather than stopping containers you did not start.

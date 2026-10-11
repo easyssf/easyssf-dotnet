@@ -9,7 +9,8 @@
 #
 # A change that touches only documentation runs sign-off and docs; a failure in build stops
 # everything behind it. The normal test run needs no Docker: the PostgreSQL cases of the Data
-# tests only exist when EASYSSF_DATABASE_TESTS is set, which the database job does.
+# tests only exist when EASYSSF_DATABASE_TESTS is set, which the database job does, and the
+# conformance plans are skipped unless EASYSSF_CONFORMANCE_TESTS is set, see conformance.yml.
 name: CI
 
 on:

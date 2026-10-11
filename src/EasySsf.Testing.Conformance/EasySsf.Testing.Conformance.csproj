@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Runs the OpenID conformance suite's SSF receiver test plans against a receiver built on easyssf: the suite started with Testcontainers, the scenarios the receiver plays and the modules of the plans.</Description>
+    <!-- a test harness that drives Docker containers; Testcontainers is not trimmable -->
+    <IsAotCompatible>false</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EasySsf.Receiver\EasySsf.Receiver.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Testcontainers" Version="4.15.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the configurations the plans are created with, and the TLS material of the receiver under test -->
+    <EmbeddedResource Include="suite-config\*.json" LogicalName="suite-config/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="tls\*.pem" LogicalName="tls/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="test-ca.pem" LogicalName="test-ca.pem" />
+  </ItemGroup>
+
+</Project>

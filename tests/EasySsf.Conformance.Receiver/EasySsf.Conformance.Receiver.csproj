@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <Description>The receiver under test for the OpenID conformance suite's SSF receiver test plans.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EasySsf.Testing.Conformance\EasySsf.Testing.Conformance.csproj" />
+  </ItemGroup>
+
+</Project>

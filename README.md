@@ -38,9 +38,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), and the database stores that share processed SETs, revocations and poll acknowledgements between instances |
-| Next | The conformance harness |
-| Then | A Keycloak example |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, and the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver |
+| Next | A Keycloak example |
+| Then | The first release on NuGet |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -53,6 +53,7 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 | `EasySsf.Receiver.Hosting` | The receiver for any `Microsoft.Extensions.Hosting` application: `SsfReceiverOptions` bound from `EasySsf:Receiver`, `AddSsfReceiver()`, the `SsfTransmitterFactory` that builds the parts from the options, validation on start, the hosted service that registers streams and polls, and a health check. | `EasySsf.Receiver`, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
 | `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the endpoint the transmitter pushes SETs to, and the revocation hooks for JwtBearer (`AddSsfTokenRevocation()`) and cookie authentication (`AddSsfSessionRevocation()`). | `EasySsf.Receiver.Hosting`, ASP.NET Core, `Microsoft.AspNetCore.Authentication.JwtBearer` |
 | `EasySsf.Receiver.Data` | The database stores of the receiver on ADO.NET, in plain SQL on the tables of the Java library: processed SETs, revocations and the acknowledgements a poller owes, shared by all instances of an application; `AddDatabaseStores()` for the host, `DbSsfSchema` with the SQL for a migration tool, a cleanup of expired rows. | `EasySsf.Receiver.Hosting`, `System.Data.Common` |
+| `EasySsf.Testing.Conformance` | Runs the OpenID conformance suite's SSF receiver test plans against a receiver under test, in any framework: the suite started with Testcontainers, the scenarios the receiver plays, the plans and the expected outcome of every module, see [Conformance](#conformance). | `EasySsf.Receiver`, Testcontainers |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -555,6 +556,23 @@ available at the poll endpoint, `transmitter.Available = false` simulates an out
 acknowledged, `transmitter.Streams` the streams it registered. A test with several transmitters
 gives each its own host with `TestTransmitter.WithMetadata(location, "okta.example")`.
 
+## Conformance
+
+The receiver is tested against the OpenID conformance suite's SSF and CAEP receiver test plans,
+with push and poll delivery. [`tests/EasySsf.Conformance.Receiver`](tests/EasySsf.Conformance.Receiver)
+is the receiver under test, a small ASP.NET Core application that plays the stream operations a
+test module expects; `tests/EasySsf.Conformance.Tests` runs the four plans against it, with the
+suite started in Docker by Testcontainers. The plan tests are skipped unless asked for, as a plan
+takes minutes:
+
+```sh
+EASYSSF_CONFORMANCE_TESTS=true dotnet test tests/EasySsf.Conformance.Tests
+```
+
+See the [README of the receiver under test](tests/EasySsf.Conformance.Receiver/README.md) for the
+plans, the suite image (`release-v5.3.2`, pinned by digest) and manual runs against a suite of
+your own.
+
 ## Build
 
 ```sh
@@ -562,6 +580,7 @@ dotnet build
 dotnet test
 dotnet format        # formatting per .editorconfig; CI fails on unformatted sources
 EASYSSF_DATABASE_TESTS=true dotnet test tests/EasySsf.Receiver.Data.Tests   # also on PostgreSQL, needs Docker
+EASYSSF_CONFORMANCE_TESTS=true dotnet test tests/EasySsf.Conformance.Tests   # the conformance plans, needs Docker
 ```
 
 .NET SDK 10.0.401 or a later feature band (`global.json`). The libraries build with warnings as
