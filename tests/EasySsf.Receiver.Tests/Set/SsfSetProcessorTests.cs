@@ -212,16 +212,21 @@ public class SsfSetProcessorTests
     [Fact]
     public async Task RenewedClaimKeepsTheSetWhileAHandlerOutlivesTheLease()
     {
-        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromMilliseconds(500));
+        // the lease is judged by the test's clock, the renewals run on the real one: the test
+        // moves the clock past the lease and waits for the next renewal, which starts the age over
+        TestClock clock = new();
+        RenewalCountingStore store = new(new InMemorySsfJtiDedupStore(10, TimeSpan.FromSeconds(30), clock));
         SlowHandler slow = new();
         SsfSetProcessorOptions options = Options();
-        options.ClaimRenewal = TimeSpan.FromMilliseconds(100);
+        options.ClaimRenewal = TimeSpan.FromMilliseconds(20);
         SsfSetProcessor processor = new(_verifier, store, [slow], options);
         Task<SsfSetProcessingOutcome> processing = Task.Run(() => processor.ProcessAsync("jti-1"));
         await slow.Handling.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // twice the lease later the claim is still held, thanks to the renewals
-        await Task.Delay(1000);
+        clock.Advance(TimeSpan.FromSeconds(61));
+        int renewalsBefore = store.Renewals;
+        await Eventually.UntilAsync(() => store.Renewals > renewalsBefore);
         Assert.Equal(SsfJtiClaim.InProgress, await store.ClaimAsync(await _verifier.VerifyAsync("jti-1")));
 
         slow.Release.SetResult();
@@ -232,14 +237,15 @@ public class SsfSetProcessorTests
     [Fact]
     public async Task WithoutRenewalAHandlerThatOutlivesTheLeaseLosesTheSet()
     {
-        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromMilliseconds(200));
+        TestClock clock = new();
+        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromSeconds(30), clock);
         SlowHandler slow = new();
         SsfSetProcessor processor = new(_verifier, store, [slow], Options());
         Task<SsfSetProcessingOutcome> processing = Task.Run(() => processor.ProcessAsync("jti-1"));
         await slow.Handling.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // the lease passed: the SET is taken over
-        await Task.Delay(400);
+        clock.Advance(TimeSpan.FromSeconds(61));
         SsfJtiClaim taker = await store.ClaimAsync(await _verifier.VerifyAsync("jti-1"));
         Assert.True(taker.IsNew);
 
@@ -262,6 +268,38 @@ public class SsfSetProcessorTests
         {
             Handling.TrySetResult();
             await Release.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Counts the renewals a store receives, so that a test can wait for one.
+    /// </summary>
+    private sealed class RenewalCountingStore(ISsfJtiDedupStore inner) : ISsfJtiDedupStore
+    {
+        private int _renewals;
+
+        public int Renewals => Volatile.Read(ref _renewals);
+
+        public ValueTask<SsfJtiClaim> ClaimAsync(SsfEventToken eventToken, CancellationToken cancellationToken = default)
+        {
+            return inner.ClaimAsync(eventToken, cancellationToken);
+        }
+
+        public ValueTask ProcessedAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+        {
+            return inner.ProcessedAsync(eventToken, claim, cancellationToken);
+        }
+
+        public ValueTask ForgetAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+        {
+            return inner.ForgetAsync(eventToken, claim, cancellationToken);
+        }
+
+        public async ValueTask<SsfJtiClaim?> RenewAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+        {
+            SsfJtiClaim? renewed = await inner.RenewAsync(eventToken, claim, cancellationToken);
+            Interlocked.Increment(ref _renewals);
+            return renewed;
         }
     }
 

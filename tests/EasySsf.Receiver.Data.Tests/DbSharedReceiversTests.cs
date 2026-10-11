@@ -222,9 +222,11 @@ public sealed class DbSharedReceiversTests
         Task<int> aPolls = Task.Run(() => a.Poller.PollNowAsync());
         await aIsHandling.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // the lease passes while a is still on the SET, but a renews its claim
+        // the lease passes while a is still on the SET, but a renews its claim: the next renewal
+        // moves STATE_CHANGED_AT to the advanced clock
         setup.Clock.Advance(TimeSpan.FromSeconds(61));
-        await Task.Delay(500);
+        long advanced = setup.Clock.GetUtcNow().ToUnixTimeMilliseconds();
+        await Eventually.UntilAssertedAsync(async () => Assert.True(await setup.StateChangedAtAsync(jti) >= advanced));
         Assert.Equal(1, await b.Poller.PollNowAsync());
         Assert.Empty(b.Handled);
         Assert.Empty(setup.Transmitter.AcknowledgedSets);
@@ -392,6 +394,11 @@ public sealed class DbSharedReceiversTests
         public async Task<string> StateAsync(string jti)
         {
             return (await Database.QueryAsync("SELECT STATE FROM EASYSSF_PROCESSED_SET WHERE JTI = ?", reader => reader.GetString(0), jti))[0];
+        }
+
+        public async Task<long> StateChangedAtAsync(string jti)
+        {
+            return (await Database.QueryAsync("SELECT STATE_CHANGED_AT FROM EASYSSF_PROCESSED_SET WHERE JTI = ?", reader => Convert.ToInt64(reader.GetValue(0)), jti))[0];
         }
 
         public SsfEventToken Token(string jti)
