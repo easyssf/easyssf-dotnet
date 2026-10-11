@@ -25,9 +25,9 @@ order:
 
 | Project | Holds | Depends on |
 |---|---|---|
-| `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, as immutable records over `JsonElement` | BCL only |
+| `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, as immutable records over `JsonElement` | BCL only |
 | `src/EasySsf.Testing` | `TestTransmitter`, an in-process transmitter that signs SETs and serves its JWK Set through an `HttpMessageHandler` | Core |
-| `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push, handlers and metrics; later poll, stream management, revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push, handlers (generic and per event family) and metrics; later poll, stream management, revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `tests/EasySsf.Core.Tests`, `tests/EasySsf.Receiver.Tests` | xUnit tests, ported from the Java modules | the project under test, Testing |
 
 Planned, in this order: `EasySsf.Receiver.Hosting` (options, DI, background services, health),
@@ -100,7 +100,13 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - **Event types are URIs; aliases are a convenience.** `SsfEventTypes` maps aliases such as
   `CaepSessionRevoked` to URIs and back; everything that takes an event type accepts both and
   resolves with `SsfEventTypes.Resolve`. A new event family gets constants, aliases registered in
-  the static constructor, and a mention in the class documentation.
+  the static constructor, and a mention in the class documentation. A new event of CAEP or RISC
+  also gets a member of `SsfCaepEventKind`/`SsfRiscEventKind` (before `Other`), a row in the
+  `...Kinds` static class, an `On...Async` method of the handler, and a line in the two
+  `DispatchesEveryKindToItsMethod` tests.
+- **Enums carry no data.** Where a Java enum has fields (`SsfCaepEventKind.eventType()`), the C#
+  enum is plain and a static class of the plural name (`SsfCaepEventKinds`) holds the extension
+  methods and the `Of(...)` lookup.
 - **Strict by default, lenient by configuration.** The receiver rejects what the specification
   forbids (`invalid_request`) and tolerates older drafts or known transmitter quirks only behind
   an explicit mode (`SubjectCompatibilityMode.Legacy`), each documented. The SSF error codes

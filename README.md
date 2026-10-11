@@ -36,9 +36,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, metrics, a `TestTransmitter` for the tests of a receiver |
-| Next | Typed CAEP, RISC and SCIM events and handlers |
-| Then | Hosting and ASP.NET Core (options, DI, `MapSsfPush`, metrics, health); polling and stream management (RFC 8936, SSF stream API); token revocation and session termination; ADO.NET stores; the conformance harness |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metrics, a `TestTransmitter` for the tests of a receiver |
+| Next | Hosting and ASP.NET Core: options, DI, `MapSsfPush`, metrics, health |
+| Then | Polling and stream management (RFC 8936, SSF stream API); token revocation and session termination; ADO.NET stores; the conformance harness |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -46,8 +46,8 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 
 | Project | | Depends on |
 |---|---|---|
-| `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
-| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling and metrics today; polling, stream management, revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
+| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, CAEP, RISC and SCIM handlers and metrics today; polling, stream management, revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs and serves its JWK Set and metadata through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -75,6 +75,10 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
   application does not interpret, as SSF requires.
 - Records **metrics** with `System.Diagnostics.Metrics` under the Java library's names
   (`easyssf.receiver.sets`, `.events`, `.poll`).
+- **Typed events**: `SsfCaepEvent` (CAEP 1.0, the common claims of section 2 and the
+  event-specific ones of section 3), `SsfRiscEvent` (RISC 1.0) and `SsfScimEvent` with
+  `SsfScimSubject` (SCIM Events, RFC 9967), each read from a SET with `In(eventToken)`, and the
+  handler base classes that dispatch them, see [Typed handlers](#typed-handlers).
 
 ## Verifying a SET
 
@@ -154,6 +158,54 @@ delivers the SET again; the other handlers still run. `SsfEventHandler.Of` handl
 `processor.ProcessAsync` call of your own, the outcome tells whether the SET was handled or a
 duplicate, and `SsfSetProcessorOptions` takes the metrics, the critical subject members a
 transmitter declares and the stream verification hook.
+
+## Typed handlers
+
+For CAEP, RISC and SCIM Events, derive from the handler of the family and override the methods for
+the events the application acts on. Each method gets the typed event and the context of the SET;
+the subject is `eventContext.Subject` for CAEP and RISC, `scimEvent.Subject` for SCIM.
+
+```csharp
+using EasySsf.Core.Caep;
+using EasySsf.Core.Scim;
+using EasySsf.Receiver.Caep;
+using EasySsf.Receiver.Scim;
+
+class StepUpHandler(IStepUp stepUp) : SsfCaepEventHandler
+{
+    protected override Task OnAssuranceLevelChangeAsync(SsfCaepEvent caepEvent, SsfEventContext eventContext,
+            CancellationToken cancellationToken)
+    {
+        return (caepEvent.ChangeDirection == "decrease")
+            ? stepUp.RequireAsync(eventContext.Subject.Subject, caepEvent.CurrentLevel, cancellationToken)
+            : Task.CompletedTask;
+    }
+}
+
+class ProvisioningHandler(IUsers users) : SsfScimEventHandler
+{
+    protected override Task OnCreateAsync(SsfScimEvent scimEvent, SsfEventContext eventContext,
+            CancellationToken cancellationToken)
+    {
+        return (scimEvent.IsFull && scimEvent.Subject?.ResourceType == "Users")
+            ? users.CreateAsync(scimEvent.Subject.Id, scimEvent.Data, cancellationToken)
+            : Task.CompletedTask;
+    }
+
+    protected override Task OnDeactivateAsync(SsfScimEvent scimEvent, SsfEventContext eventContext,
+            CancellationToken cancellationToken)
+    {
+        return users.DisableAsync(scimEvent.Subject?.Id, cancellationToken);
+    }
+}
+```
+
+An event type in the CAEP or RISC namespace that this version does not know arrives as
+`SsfCaepEventKind.Other` or `SsfRiscEventKind.Other` in `OnOtherCaepEventAsync` and
+`OnOtherRiscEventAsync`, with the common claims typed and the rest in `Payload`. The enums grow as
+the specifications do, so do not switch over them exhaustively. `SsfScimOperation` folds the
+`notice` and `full` variants of a provisioning event into one operation; `IsFull` and `IsNotice`
+tell which arrived.
 
 ## Testing your receiver
 

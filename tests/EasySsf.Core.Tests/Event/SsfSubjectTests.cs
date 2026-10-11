@@ -105,15 +105,15 @@ public class SsfSubjectTests
     [Fact]
     public void ScimResourceOfRfc9967NamesTheUserByItsUri()
     {
-        SsfSubject subject = SsfSubject.From(Scim("/Users/2b2f880a", "jdoe"));
+        SsfSubject subject = SsfSubject.From(SsfSubjectIdentifiers.Scim("/Users/2b2f880a", "jdoe"));
         Assert.False(subject.IsEmpty);
         Assert.True(subject.HasUser);
         Assert.True(subject.UserIdentifier!.IsScim);
         Assert.Equal("/Users/2b2f880a", subject.UserIdentifier.Value);
         Assert.Equal("jdoe", subject.UserIdentifier.Claim("externalId"));
         Assert.Null(subject.Subject);
-        Assert.False(Scim("/Users/2b2f880a").ContainsKey("externalId"));
-        Assert.False(Scim("/Users/2b2f880a", null).ContainsKey("externalId"));
+        Assert.False(SsfSubjectIdentifiers.Scim("/Users/2b2f880a").ContainsKey("externalId"));
+        Assert.False(SsfSubjectIdentifiers.Scim("/Users/2b2f880a", null).ContainsKey("externalId"));
     }
 
     [Fact]

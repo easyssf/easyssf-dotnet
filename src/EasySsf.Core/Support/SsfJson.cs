@@ -88,6 +88,46 @@ public static class SsfJson
     }
 
     /// <summary>
+    /// Reads a member of a JSON object as text, whatever its type: a string as is, a number or
+    /// boolean as written, an object or array as its JSON text.
+    /// </summary>
+    /// <returns>
+    /// the text, <see langword="null"/> if the element is not an object, has no such member or the
+    /// member is JSON <c>null</c>
+    /// </returns>
+    public static string? TextMember(this JsonElement element, string name)
+    {
+        JsonElement? member = element.Member(name);
+        return member?.ValueKind switch
+        {
+            null or JsonValueKind.Null or JsonValueKind.Undefined => null,
+            JsonValueKind.String => member.Value.GetString(),
+            _ => member.Value.GetRawText(),
+        };
+    }
+
+    /// <summary>
+    /// Reads an array member of a JSON object, keeping its string elements.
+    /// </summary>
+    /// <returns>the strings, empty if the member is absent or not an array</returns>
+    public static IReadOnlyList<string> StringArrayMember(this JsonElement element, string name)
+    {
+        if (element.Member(name) is not { ValueKind: JsonValueKind.Array } array)
+        {
+            return [];
+        }
+        List<string> values = [];
+        foreach (JsonElement item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                values.Add(item.GetString()!);
+            }
+        }
+        return values.AsReadOnly();
+    }
+
+    /// <summary>
     /// Reads a string member of a JSON object.
     /// </summary>
     /// <returns>
