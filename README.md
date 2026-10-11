@@ -38,16 +38,6 @@ behaviour; the two share their test suites, their database tables and their Keyc
 | **Package prefix** | `EasySsf` |
 | **License** | Apache-2.0 |
 
-## State of the port
-
-The receiver is ported slice by slice from the Java library, each slice with the Java tests.
-
-| | |
-|---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver, and the examples: a resource server and an OIDC client against Keycloak, and SCIM provisioning |
-| Next | The first release on NuGet, with a `CHANGELOG.md` |
-| Then | A package icon, and whatever the first users ask for |
-
 ## Projects
 
 | Project | | Depends on |

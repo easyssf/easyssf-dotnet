@@ -172,12 +172,11 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 
 ## Documentation that changes with the code
 
-- `README.md` is the user document: its "State of the port" table says what is done and what comes
-  next, its "Configuration" table lists every setting with its default, and a new option, alias,
-  subject format or handler is documented there in the same change. Keep its examples compiling
-  against the current API.
+- `README.md` is the user document: its "Configuration" table lists every setting with its default,
+  and a new option, alias, subject format or handler is documented there in the same change. Keep
+  its examples compiling against the current API.
 - `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
-  Until then, the "State of the port" table of the README says what is done and what comes next.
+  Until then, the git history is the record of what changed.
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.
 
 ## Working practice
