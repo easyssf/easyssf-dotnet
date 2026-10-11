@@ -19,7 +19,9 @@ namespace EasySsf.Receiver.Data;
 /// default) counts as abandoned by a crashed instance and the next claim takes it over. That
 /// <c>STATE_CHANGED_AT</c> is also the token of the claim: the success or failure of the handlers
 /// only changes the row while it still carries the token they were granted, so an instance that
-/// outlived the lease leaves the claim of the taker-over alone.
+/// outlived the lease leaves the claim of the taker-over alone. A <see cref="RenewAsync">renewal</see>
+/// moves <c>STATE_CHANGED_AT</c> forward the same way a take-over does, fenced by the current token,
+/// and the new value is the token of the renewed claim.
 /// </para>
 /// <para>
 /// SETs are forgotten after the <see cref="Retention"/>: the store deletes them when it is written
@@ -45,7 +47,7 @@ public sealed class DbSsfJtiDedupStore : ISsfJtiDedupStore, IDbSsfExpiringStore
 
     private readonly string _select;
 
-    private readonly string _takeOver;
+    private readonly string _moveClaim;
 
     private readonly string _markProcessed;
 
@@ -73,7 +75,8 @@ public sealed class DbSsfJtiDedupStore : ISsfJtiDedupStore, IDbSsfExpiringStore
         _timeProvider = timeProvider ?? TimeProvider.System;
         _insert = "INSERT INTO " + Table + " (ISSUER, JTI, STATE, STATE_CHANGED_AT) VALUES (?, ?, ?, ?)";
         _select = "SELECT STATE, STATE_CHANGED_AT FROM " + Table + " WHERE ISSUER = ? AND JTI = ?";
-        _takeOver = "UPDATE " + Table + " SET STATE_CHANGED_AT = ? WHERE ISSUER = ? AND JTI = ? AND STATE = '" + InProgress
+        // a take-over and a renewal both move the claim's token forward, fenced by the current one
+        _moveClaim = "UPDATE " + Table + " SET STATE_CHANGED_AT = ? WHERE ISSUER = ? AND JTI = ? AND STATE = '" + InProgress
             + "' AND STATE_CHANGED_AT = ?";
         // processed and forget are fenced by the claim's token, the STATE_CHANGED_AT of the claim
         _markProcessed = "UPDATE " + Table + " SET STATE = '" + Processed + "', STATE_CHANGED_AT = ? WHERE ISSUER = ? AND JTI = ? AND STATE = '"
@@ -159,7 +162,7 @@ public sealed class DbSsfJtiDedupStore : ISsfJtiDedupStore, IDbSsfExpiringStore
                 // abandoned: take it over, unless another instance did just now. The new
                 // STATE_CHANGED_AT is the token of the new claim; the old holder's token no longer
                 // matches, so it can neither complete nor forget this claim.
-                int taken = await _db.UpdateAsync(_takeOver, [token, eventToken.Iss, eventToken.Jti, row.Since], cancellationToken).ConfigureAwait(false);
+                int taken = await _db.UpdateAsync(_moveClaim, [token, eventToken.Iss, eventToken.Jti, row.Since], cancellationToken).ConfigureAwait(false);
                 return (taken == 1) ? SsfJtiClaim.Granted(token) : SsfJtiClaim.InProgress;
             }
             return SsfJtiClaim.InProgress;
@@ -193,6 +196,17 @@ public sealed class DbSsfJtiDedupStore : ISsfJtiDedupStore, IDbSsfExpiringStore
         ArgumentNullException.ThrowIfNull(eventToken);
         ArgumentNullException.ThrowIfNull(claim);
         await _db.UpdateAsync(_delete, [eventToken.Iss, eventToken.Jti, claim.Token], cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<SsfJtiClaim?> RenewAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(eventToken);
+        ArgumentNullException.ThrowIfNull(claim);
+        // the new STATE_CHANGED_AT is the token of the renewed claim: later than the old one even
+        // within the same millisecond, so that the row is seen as changed
+        long token = Math.Max(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), claim.Token + 1);
+        int renewed = await _db.UpdateAsync(_moveClaim, [token, eventToken.Iss, eventToken.Jti, claim.Token], cancellationToken).ConfigureAwait(false);
+        return (renewed == 1) ? SsfJtiClaim.Granted(token) : null;
     }
 
     public ValueTask<int> PurgeExpiredAsync(CancellationToken cancellationToken = default)

@@ -46,7 +46,7 @@ The receiver is ported slice by slice from the Java library, each slice with the
 |---|---|
 | Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver, and the examples: a resource server and an OIDC client against Keycloak, and SCIM provisioning |
 | Next | The first release on NuGet, with a `CHANGELOG.md` |
-| Then | Lease renewal in the database de-duplication store, so that a handler may outlive the lease |
+| Then | A package icon, and whatever the first users ask for |
 
 ## Projects
 
@@ -248,11 +248,11 @@ builder.AddSsfReceiver().AddDatabaseStores(() => new SqliteConnection(connection
 - **Several instances**: a SET is claimed before its handlers run and marked processed afterwards.
   An instance that receives a SET another one is handling leaves it for the transmitter's redelivery,
   neither handling nor acknowledging it, so a handler failure on the first instance is not masked by
-  an acknowledgement of the second. A claim older than `Dedup:Lease` (60 seconds) counts as abandoned
-  by a crashed instance and the SET is handled again. The guarantee is therefore at-least-once
-  processing with concurrent deliveries suppressed, not exactly once: handlers stay idempotent and
-  key their side effects by `eventContext.IdempotencyKey`. Set the lease longer than your longest
-  handler.
+  an acknowledgement of the second. The claim is renewed every third of `Dedup:Lease` (60 seconds)
+  while the handlers run; a claim that was not renewed for the lease counts as abandoned by a crashed
+  instance and the SET is handled again. The guarantee is therefore at-least-once processing with
+  concurrent deliveries suppressed, not exactly once: handlers stay idempotent and key their side
+  effects by `eventContext.IdempotencyKey`.
 - **Opting out**: `Data:Enabled=false` keeps the state in memory although the stores were added. An
   `ISsfJtiDedupStore`, `ISsfTokenRevocationStore` or `ISsfPollAckStore` the application registered
   itself is kept in any case.
@@ -320,7 +320,7 @@ it.
 | `Push:DeliveryEndpointUrl` | | How the transmitter reaches the push endpoint, for a stream managed by the receiver. |
 | `Dedup:Enabled` | `true` | |
 | `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |
-| `Dedup:Lease` | `00:01:00` | How long a SET counts as being handled by the instance that claimed it; longer than the longest handler. |
+| `Dedup:Lease` | `00:01:00` | How long a SET counts as being handled by the instance that claimed it without renewing the claim, which it does every third of this time while its handlers run. |
 | `Dedup:Retention` | `7.00:00:00` | How long the database store remembers a processed SET. |
 | `Data:Enabled` | `true` | Keep the state in the database once `AddDatabaseStores()` was called. |
 | `Data:InitializeSchema` | `Embedded` | When to create missing tables: `Embedded` (SQLite), `Always` or `Never`. |

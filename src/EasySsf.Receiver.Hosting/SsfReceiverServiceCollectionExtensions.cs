@@ -123,6 +123,8 @@ public static class SsfReceiverServiceCollectionExtensions
                 Metrics = provider.GetRequiredService<ISsfReceiverMetrics>(),
                 StreamVerifications = issuer => provider.GetRequiredService<SsfTransmitters>().StreamVerification(issuer),
                 CriticalSubjectMembers = issuer => provider.GetRequiredService<SsfTransmitters>().CriticalSubjectMembers(issuer),
+                // a handler may run longer than the lease: the claim is renewed meanwhile
+                ClaimRenewal = options.Dedup.Enabled ? options.Dedup.Lease / 3 : null,
             };
             processorOptions.UnderstoodSubjectMembers.Clear();
             foreach (string member in options.EffectiveUnderstoodSubjectMembers)

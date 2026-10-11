@@ -39,4 +39,14 @@ public sealed class SsfSetProcessorOptions
     /// </summary>
     /// <seealso cref="UnderstoodSubjectMembers"/>
     public Func<string, IReadOnlyCollection<string>?>? CriticalSubjectMembers { get; set; }
+
+    /// <summary>
+    /// Renews the claim of a SET at this interval while its handlers run
+    /// (<see cref="ISsfJtiDedupStore.RenewAsync"/>), so that a handler that runs longer than the
+    /// lease of the de-duplication store does not lose the SET to another instance; a third of the
+    /// lease is a good interval. <see langword="null"/>, the default, turns renewal off: the lease
+    /// then bounds the handlers. A renewal that finds the claim taken over stops, and the result of
+    /// the handlers is not recorded, as without renewal after the lease.
+    /// </summary>
+    public TimeSpan? ClaimRenewal { get; set; }
 }

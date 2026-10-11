@@ -37,6 +37,28 @@ public class InMemorySsfJtiDedupStoreTests
     }
 
     [Fact]
+    public async Task RenewedClaimOutlivesTheLease()
+    {
+        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromSeconds(30), _clock);
+        SsfJtiClaim claim = await store.ClaimAsync(Set("jti-1"));
+        _clock.Advance(TimeSpan.FromSeconds(20));
+        Assert.Equal(claim, await store.RenewAsync(Set("jti-1"), claim));
+        // 40 seconds after the claim, 20 after the renewal: still held
+        _clock.Advance(TimeSpan.FromSeconds(20));
+        Assert.Equal(SsfJtiClaim.InProgress, await store.ClaimAsync(Set("jti-1")));
+        // 30 seconds after the renewal: abandoned
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        SsfJtiClaim taker = await store.ClaimAsync(Set("jti-1"));
+        Assert.True(taker.IsNew);
+        // the late holder can neither renew nor complete the claim taken over from it
+        Assert.Null(await store.RenewAsync(Set("jti-1"), claim));
+        await store.ProcessedAsync(Set("jti-1"), claim);
+        Assert.Equal(SsfJtiClaim.InProgress, await store.ClaimAsync(Set("jti-1")));
+        await store.ProcessedAsync(Set("jti-1"), taker);
+        Assert.Null(await store.RenewAsync(Set("jti-1"), taker));
+    }
+
+    [Fact]
     public async Task AbandonedClaimIsTakenOverAfterTheLease()
     {
         InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromSeconds(30), _clock);

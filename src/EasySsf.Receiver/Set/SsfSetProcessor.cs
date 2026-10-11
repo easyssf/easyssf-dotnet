@@ -124,26 +124,44 @@ public sealed class SsfSetProcessor
             _logger.LogInformation("Received stream verification event from {Issuer}", eventToken.Iss);
         }
         Exception? failure = null;
-        foreach (ISsfEventHandler handler in _handlers)
+        // the claim stays alive while the handlers run, if renewal is on; the claim as last renewed
+        // is the one the outcome is recorded with
+        ClaimRenewal? renewal = (claim is not null && _options.ClaimRenewal is { } interval) ? new ClaimRenewal(this, eventToken, claim, interval) : null;
+        try
         {
-            try
+            foreach (ISsfEventHandler handler in _handlers)
             {
-                await handler.HandleAsync(eventContext, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // the receiver is shutting down: let a redelivery handle the SET
-                if (claim is not null)
+                try
                 {
-                    await _dedupStore!.ForgetAsync(eventToken, claim, CancellationToken.None).ConfigureAwait(false);
+                    await handler.HandleAsync(eventContext, cancellationToken).ConfigureAwait(false);
                 }
-                throw;
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // the receiver is shutting down: let a redelivery handle the SET
+                    if (claim is not null)
+                    {
+                        if (renewal is not null)
+                        {
+                            claim = await renewal.StopAsync().ConfigureAwait(false);
+                            renewal = null;
+                        }
+                        await _dedupStore!.ForgetAsync(eventToken, claim, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // a failing handler must not keep the others from reacting to the event
+                    _logger.LogError(ex, "ISsfEventHandler {Handler} failed for SET {Jti}", handler.GetType().FullName, eventToken.Jti);
+                    failure ??= ex;
+                }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            if (renewal is not null)
             {
-                // a failing handler must not keep the others from reacting to the event
-                _logger.LogError(ex, "ISsfEventHandler {Handler} failed for SET {Jti}", handler.GetType().FullName, eventToken.Jti);
-                failure ??= ex;
+                claim = await renewal.StopAsync().ConfigureAwait(false);
             }
         }
         if (failure is not null)
@@ -165,6 +183,81 @@ public sealed class SsfSetProcessor
             metrics.EventHandled(issuer, eventType, deliveryMethod);
         }
         return SsfSetProcessingOutcome.Handled;
+    }
+
+    /// <summary>
+    /// The claim of a SET in progress, renewed at the <see cref="SsfSetProcessorOptions.ClaimRenewal"/>
+    /// interval until the handlers are done. <see cref="StopAsync"/> waits for a renewal in
+    /// progress, so the claim the outcome is recorded with is the one the store holds.
+    /// </summary>
+    private sealed class ClaimRenewal
+    {
+        private readonly SsfSetProcessor _processor;
+
+        private readonly SsfEventToken _eventToken;
+
+        private readonly TimeSpan _interval;
+
+        private readonly CancellationTokenSource _stopping = new();
+
+        private readonly Task _loop;
+
+        private SsfJtiClaim _claim;
+
+        public ClaimRenewal(SsfSetProcessor processor, SsfEventToken eventToken, SsfJtiClaim claim, TimeSpan interval)
+        {
+            _processor = processor;
+            _eventToken = eventToken;
+            _claim = claim;
+            _interval = interval;
+            _loop = Task.Run(RunAsync);
+        }
+
+        /// <summary>
+        /// Stops renewing and returns the claim as last renewed.
+        /// </summary>
+        public async Task<SsfJtiClaim> StopAsync()
+        {
+            await _stopping.CancelAsync().ConfigureAwait(false);
+            await _loop.ConfigureAwait(false);
+            _stopping.Dispose();
+            return _claim;
+        }
+
+        private async Task RunAsync()
+        {
+            using PeriodicTimer timer = new(_interval);
+            try
+            {
+                while (await timer.WaitForNextTickAsync(_stopping.Token).ConfigureAwait(false))
+                {
+                    try
+                    {
+                        SsfJtiClaim? renewed = await _processor._dedupStore!.RenewAsync(_eventToken, _claim, _stopping.Token).ConfigureAwait(false);
+                        if (renewed is null)
+                        {
+                            _processor._logger.LogWarning("SET {Jti} was taken over by another instance while its handlers were still running;"
+                                + " the lease of the de-duplication store is shorter than they take", _eventToken.Jti);
+                            return;
+                        }
+                        _claim = renewed;
+                    }
+                    catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        // tried again at the next interval
+                        _processor._logger.LogWarning("Could not renew the claim of SET {Jti}: {Reason}", _eventToken.Jti, ex.Message);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // stopped
+            }
+        }
     }
 
     private void CheckCriticalSubjectMembers(SsfEventContext eventContext)

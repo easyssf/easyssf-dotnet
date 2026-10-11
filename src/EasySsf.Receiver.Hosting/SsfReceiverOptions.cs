@@ -237,10 +237,10 @@ public sealed class SsfDedupOptions
     public TimeSpan Retention { get; set; } = TimeSpan.FromDays(7);
 
     /// <summary>
-    /// How long a SET counts as being handled by the instance that claimed it. Another instance
-    /// that receives the SET in that time leaves it for a redelivery; after it, the claim counts as
-    /// abandoned by a crashed instance and the SET is handled again. Longer than the longest event
-    /// handler.
+    /// How long a SET counts as being handled by the instance that claimed it without renewing the
+    /// claim, which it does every third of this time while its handlers run. Another instance that
+    /// receives the SET in that time leaves it for a redelivery; after it, the claim counts as
+    /// abandoned by a crashed instance and the SET is handled again.
     /// </summary>
     public TimeSpan Lease { get; set; } = TimeSpan.FromSeconds(60);
 }

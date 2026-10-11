@@ -130,6 +130,22 @@ public sealed class InMemorySsfJtiDedupStore : ISsfJtiDedupStore
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<SsfJtiClaim?> RenewAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        string key = ISsfJtiDedupStore.Key(eventToken);
+        lock (_lock)
+        {
+            if (_entries.TryGetValue(key, out Known? entry) && !Holds(entry, claim))
+            {
+                return ValueTask.FromResult<SsfJtiClaim?>(null);
+            }
+            // an evicted claim is restored, as ProcessedAsync records it as well
+            Put(key, new Known(SsfJtiClaimState.InProgress, _timeProvider.GetUtcNow(), claim.Token));
+            return ValueTask.FromResult<SsfJtiClaim?>(claim);
+        }
+    }
+
     /// <summary>
     /// Whether the entry is the claim given: in progress and not taken over since.
     /// </summary>

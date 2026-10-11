@@ -1,6 +1,8 @@
 # Runs the receiver conformance tests of tests/EasySsf.Conformance.Tests against the OpenID conformance
-# suite, which Testcontainers starts on the runner. One job per test plan, each with its own suite.
-# See tests/EasySsf.Conformance.Receiver/README.md for the plans and the suite image.
+# suite, which Testcontainers starts on the runner, every night and on demand. One job per test plan,
+# each with its own suite. The suite and nginx images are the ones ConformanceSettings names, the last
+# suite release pinned by digest; a manual run can name other images. See
+# tests/EasySsf.Conformance.Receiver/README.md for the plans and the suite image.
 name: Conformance
 
 on:
@@ -16,9 +18,8 @@ on:
           Its nginx image. Empty: the one ConformanceSettings names.
         required: false
         default: ''
-  # Later, once the harness has proven itself against a few releases: nightly.
-  # schedule:
-  #   - cron: '17 2 * * *'   # 02:17 UTC, every night
+  schedule:
+    - cron: '17 2 * * *'   # 02:17 UTC, every night
 
 permissions:
   contents: read

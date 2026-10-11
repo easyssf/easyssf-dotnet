@@ -180,6 +180,40 @@ public sealed class DbSsfStoresTests
 
     [Theory]
     [MemberData(nameof(TestDatabase.All), MemberType = typeof(TestDatabase))]
+    public async Task RenewedClaimOutlivesTheLease(string database)
+    {
+        await using Stores stores = await Stores.CreateAsync(database);
+        DbSsfJtiDedupStore holder = stores.DedupStore();
+        DbSsfJtiDedupStore other = stores.DedupStore();
+        holder.Lease = TimeSpan.FromSeconds(30);
+        other.Lease = TimeSpan.FromSeconds(30);
+        SsfJtiClaim claim = await holder.ClaimAsync(Set("jti-1"));
+        stores.Clock.Advance(TimeSpan.FromSeconds(20));
+        // the renewed claim carries the new STATE_CHANGED_AT as its token
+        SsfJtiClaim renewed = Assert.IsType<SsfJtiClaim>(await holder.RenewAsync(Set("jti-1"), claim));
+        Assert.True(renewed.IsNew);
+        Assert.NotEqual(claim.Token, renewed.Token);
+        // 40 seconds after the claim, 20 after the renewal: still held
+        stores.Clock.Advance(TimeSpan.FromSeconds(20));
+        Assert.Equal(SsfJtiClaim.InProgress, await other.ClaimAsync(Set("jti-1")));
+        // the old token no longer renews or completes the claim, the renewed one does
+        Assert.Null(await holder.RenewAsync(Set("jti-1"), claim));
+        await holder.ProcessedAsync(Set("jti-1"), claim);
+        Assert.Equal("IN_PROGRESS", await stores.StateAsync("jti-1"));
+        // 30 seconds after the renewal: abandoned and taken over
+        stores.Clock.Advance(TimeSpan.FromSeconds(10));
+        SsfJtiClaim taker = await other.ClaimAsync(Set("jti-1"));
+        Assert.True(taker.IsNew);
+        Assert.Null(await holder.RenewAsync(Set("jti-1"), renewed));
+        await holder.ProcessedAsync(Set("jti-1"), renewed);
+        Assert.Equal("IN_PROGRESS", await stores.StateAsync("jti-1"));
+        await other.ProcessedAsync(Set("jti-1"), taker);
+        Assert.Equal("PROCESSED", await stores.StateAsync("jti-1"));
+        Assert.Null(await other.RenewAsync(Set("jti-1"), taker));
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.All), MemberType = typeof(TestDatabase))]
     public async Task AbandonedClaimIsTakenOverAfterTheLease(string database)
     {
         await using Stores stores = await Stores.CreateAsync(database);

@@ -205,6 +205,41 @@ public sealed class DbSharedReceiversTests
 
     [Theory]
     [MemberData(nameof(TestDatabase.All), MemberType = typeof(TestDatabase))]
+    public async Task HandlerThatOutlivesTheLeaseKeepsTheSetWhenTheClaimIsRenewed(string database)
+    {
+        await using Setup setup = await Setup.CreateAsync(database);
+        Receiver a = setup.Receiver();
+        a.Processor.Options.ClaimRenewal = TimeSpan.FromMilliseconds(100);
+        Receiver b = setup.Receiver();
+        string jti = setup.Queue("session-1");
+        TaskCompletionSource aIsHandling = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource bHasPolled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        a.AfterHandling = async () =>
+        {
+            aIsHandling.SetResult();
+            await bHasPolled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        };
+        Task<int> aPolls = Task.Run(() => a.Poller.PollNowAsync());
+        await aIsHandling.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // the lease passes while a is still on the SET, but a renews its claim
+        setup.Clock.Advance(TimeSpan.FromSeconds(61));
+        await Task.Delay(500);
+        Assert.Equal(1, await b.Poller.PollNowAsync());
+        Assert.Empty(b.Handled);
+        Assert.Empty(setup.Transmitter.AcknowledgedSets);
+        Assert.Equal("IN_PROGRESS", await setup.StateAsync(jti));
+
+        // a finishes: its success counts, with the renewed claim
+        bHasPolled.SetResult();
+        await aPolls.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal([jti], a.Handled);
+        Assert.Equal([jti], setup.Transmitter.AcknowledgedSets);
+        Assert.Equal("PROCESSED", await setup.StateAsync(jti));
+    }
+
+    [Theory]
+    [MemberData(nameof(TestDatabase.All), MemberType = typeof(TestDatabase))]
     public async Task SetClaimedByAnInstanceThatDiedBeforeItsHandlerRanIsHandledAfterTheLease(string database)
     {
         await using Setup setup = await Setup.CreateAsync(database);
@@ -278,6 +313,8 @@ public sealed class DbSharedReceiversTests
     private sealed class Receiver
     {
         public SsfPoller Poller { get; set; } = null!;
+
+        public SsfSetProcessor Processor { get; set; } = null!;
 
         public List<string> Handled { get; } = [];
 
@@ -377,10 +414,10 @@ public sealed class DbSharedReceiversTests
                 receiver.Keys.Add(eventContext.IdempotencyKey);
                 await receiver.AfterHandling();
             });
-            SsfSetProcessor processor = new(verifier, dedupStore, [handler]);
+            receiver.Processor = new SsfSetProcessor(verifier, dedupStore, [handler]);
             SsfPollerOptions options = new() { AckStore = AckStore, Transmitter = Transmitter.Issuer, FlushOnStop = false };
             receiver.Poller = new SsfPoller(Http, SsfTransmitterTokenProviders.Fixed(TestTransmitter.DefaultAccessToken),
-                () => new Uri(Transmitter.PollUri), processor, options);
+                () => new Uri(Transmitter.PollUri), receiver.Processor, options);
             _receivers.Add(receiver);
             return receiver;
         }

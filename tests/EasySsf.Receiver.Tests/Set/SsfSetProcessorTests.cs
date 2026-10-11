@@ -209,6 +209,62 @@ public class SsfSetProcessorTests
         Assert.Equal("SsfEventHandler.For(CaepCredentialChange)", onChange.ToString());
     }
 
+    [Fact]
+    public async Task RenewedClaimKeepsTheSetWhileAHandlerOutlivesTheLease()
+    {
+        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromMilliseconds(500));
+        SlowHandler slow = new();
+        SsfSetProcessorOptions options = Options();
+        options.ClaimRenewal = TimeSpan.FromMilliseconds(100);
+        SsfSetProcessor processor = new(_verifier, store, [slow], options);
+        Task<SsfSetProcessingOutcome> processing = Task.Run(() => processor.ProcessAsync("jti-1"));
+        await slow.Handling.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // twice the lease later the claim is still held, thanks to the renewals
+        await Task.Delay(1000);
+        Assert.Equal(SsfJtiClaim.InProgress, await store.ClaimAsync(await _verifier.VerifyAsync("jti-1")));
+
+        slow.Release.SetResult();
+        Assert.Equal(SsfSetProcessingOutcome.Handled, await processing.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(SsfJtiClaim.Processed, await store.ClaimAsync(await _verifier.VerifyAsync("jti-1")));
+    }
+
+    [Fact]
+    public async Task WithoutRenewalAHandlerThatOutlivesTheLeaseLosesTheSet()
+    {
+        InMemorySsfJtiDedupStore store = new(10, TimeSpan.FromMilliseconds(200));
+        SlowHandler slow = new();
+        SsfSetProcessor processor = new(_verifier, store, [slow], Options());
+        Task<SsfSetProcessingOutcome> processing = Task.Run(() => processor.ProcessAsync("jti-1"));
+        await slow.Handling.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // the lease passed: the SET is taken over
+        await Task.Delay(400);
+        SsfJtiClaim taker = await store.ClaimAsync(await _verifier.VerifyAsync("jti-1"));
+        Assert.True(taker.IsNew);
+
+        // the late success is not recorded, the SET belongs to the taker
+        slow.Release.SetResult();
+        await processing.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(SsfJtiClaim.InProgress, await store.ClaimAsync(await _verifier.VerifyAsync("jti-1")));
+    }
+
+    /// <summary>
+    /// A handler that waits until the test releases it.
+    /// </summary>
+    private sealed class SlowHandler : ISsfEventHandler
+    {
+        public TaskCompletionSource Handling { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task HandleAsync(SsfEventContext eventContext, CancellationToken cancellationToken = default)
+        {
+            Handling.TrySetResult();
+            await Release.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+    }
+
     private SsfSetProcessor Processor(params ISsfEventHandler[] handlers)
     {
         return new SsfSetProcessor(_verifier, new InMemorySsfJtiDedupStore(100), handlers, Options());

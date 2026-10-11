@@ -19,9 +19,12 @@ namespace EasySsf.Receiver.Set;
 /// </para>
 /// <para>
 /// A granted claim carries a <see cref="SsfJtiClaim.Token"/> that fences it:
-/// <see cref="ProcessedAsync"/> and <see cref="ForgetAsync"/> only act on the claim with that
-/// token. An instance whose handlers outlived the lease therefore neither completes nor deletes
-/// the claim of the instance that took the SET over; the SET belongs to the new holder.
+/// <see cref="ProcessedAsync"/>, <see cref="ForgetAsync"/> and <see cref="RenewAsync"/> only act on
+/// the claim with that token. An instance whose handlers outlived the lease therefore neither
+/// completes nor deletes the claim of the instance that took the SET over; the SET belongs to the
+/// new holder. An instance whose handlers may run longer than the lease
+/// <see cref="RenewAsync">renews</see> its claim meanwhile, so that only a crashed instance loses a
+/// SET to another.
 /// </para>
 /// </summary>
 public interface ISsfJtiDedupStore
@@ -51,6 +54,25 @@ public interface ISsfJtiDedupStore
     /// <param name="claim">the claim <see cref="ClaimAsync"/> granted for the SET</param>
     /// <param name="cancellationToken">cancels the call</param>
     ValueTask ForgetAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Extends the claim of a SET whose handlers are still running: its age starts over, so it does
+    /// not count as abandoned after the lease. Does nothing and returns <see langword="null"/> if
+    /// the claim was taken over meanwhile, the SET then belongs to the instance that took it over. A
+    /// store that does not renew returns the claim as it is, which leaves the lease as the bound for
+    /// the handlers.
+    /// </summary>
+    /// <param name="eventToken">the SET</param>
+    /// <param name="claim">the claim <see cref="ClaimAsync"/> granted for the SET, or the one the last renewal returned</param>
+    /// <param name="cancellationToken">cancels the call</param>
+    /// <returns>
+    /// the claim to use from now on, as a store may give a renewed claim a new token;
+    /// <see langword="null"/> if the claim was taken over
+    /// </returns>
+    ValueTask<SsfJtiClaim?> RenewAsync(SsfEventToken eventToken, SsfJtiClaim claim, CancellationToken cancellationToken = default)
+    {
+        return ValueTask.FromResult<SsfJtiClaim?>(claim);
+    }
 
     /// <summary>
     /// The key identifying a SET, the same one handlers use for their side effects.
