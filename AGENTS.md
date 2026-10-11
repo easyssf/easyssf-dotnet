@@ -45,9 +45,6 @@ into `EasySsf.Core`, framework code only into the Hosting, AspNetCore and Data p
   namespaces (`dotnet_style_namespace_match_folder`).
 - Port a Java type with its tests, the negative tests (the SET that must be rejected) before the
   positive ones, and keep the test names as sentences so that the two suites can be compared.
-- `scratch/porting.md`, when present, is the handoff document: the state of the port, the
-  decisions taken and the order of the remaining slices. Update it when a slice is finished or a
-  decision is made. `scratch/` is ignored by git, so the file is local to the machine.
 - When the Java code and this file disagree on a .NET matter (naming, async, JSON model), this
   file wins; on a protocol matter, the Java code and the specification win.
 
@@ -175,7 +172,7 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   subject format or handler is documented there in the same change. Keep its examples compiling
   against the current API.
 - `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
-  Until then, `scratch/porting.md` records state and decisions (see Porting).
+  Until then, the "State of the port" table of the README says what is done and what comes next.
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.
 
 ## Working practice
