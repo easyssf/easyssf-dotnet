@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Description>Example OAuth2 resource server that rejects access tokens once their Keycloak session was revoked.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EasySsf.Receiver.AspNetCore\EasySsf.Receiver.AspNetCore.csproj" />
+  </ItemGroup>
+
+</Project>

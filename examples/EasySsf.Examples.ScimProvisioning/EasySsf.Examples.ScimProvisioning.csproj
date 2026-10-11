@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Description>Example that mirrors SCIM Users into a local directory from SCIM Events (RFC 9967), with a demo transmitter of its own.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EasySsf.Receiver.Hosting\EasySsf.Receiver.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\EasySsf.Testing\EasySsf.Testing.csproj" />
+  </ItemGroup>
+
+</Project>

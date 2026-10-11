@@ -33,10 +33,11 @@ order:
 | `src/EasySsf.Receiver.Data` | The database stores (processed SETs, revocations, poll acknowledgements) in plain SQL over `ISsfDbOperations`, `DbSsfSchema` with the SQL and migrations, `AddDatabaseStores()`, the cleanup hosted service | Hosting, `System.Data.Common` |
 | `src/EasySsf.Testing.Conformance` | The conformance harness: the suite in Testcontainers, its API client, the receiver plans, the scenarios a receiver plays (`ConformanceRun`), the expected outcome per module and `ConformancePlanRunner` | Receiver, Testcontainers |
 | `tests/EasySsf.Conformance.Receiver` | The receiver under test for the suite, an ASP.NET Core application (`CtsApplication`) with the `/cts/*` control endpoints and `/ssf/push`; also runs by hand against a local suite | Testing.Conformance, ASP.NET Core |
+| `examples/` | A resource server and an OIDC client against Keycloak (`keycloak/compose.yaml`, realm `ssf-demo`) and a SCIM provisioning example with the in-process `TestTransmitter`; not published, built with the solution | AspNetCore, Hosting, Testing |
 | `tests/EasySsf.*.Tests` | xUnit tests, ported from the Java modules; the AspNetCore tests start Kestrel on a random port, the Data tests run on SQLite files and, opted in, PostgreSQL in Docker | the project under test, Testing |
 
-Planned: a Keycloak example. New protocol behaviour goes into `EasySsf.Receiver`, new vocabulary
-into `EasySsf.Core`, framework code only into the Hosting, AspNetCore and Data projects.
+New protocol behaviour goes into `EasySsf.Receiver`, new vocabulary into `EasySsf.Core`, framework
+code only into the Hosting, AspNetCore and Data projects.
 
 ## Porting
 
@@ -188,7 +189,18 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   plans on demand (`workflow_dispatch`), one job per plan.
 - When a change touches verification, push handling or de-duplication, add the negative test
   before the positive one, and run the full test suite, not only the new test.
+- The Keycloak examples contain no SSF code apart from configuration (and a logging handler). Keep
+  them that way: a feature that needs code in an example is a feature the hosting integration is
+  missing. The SCIM example's handler is application logic (what to do with a provisioning event),
+  that is fine. `tests/EasySsf.Examples.ScimProvisioning.Tests` are the only tests among the
+  examples; they start the application against a `TestTransmitter` on a random port and poll every
+  200 ms. The realm `ssf-demo` is imported from `examples/keycloak/`, the same files as in the Java
+  repository; change the realm export there, not in a running Keycloak. Changing the ports (8080
+  Keycloak, 8081 resource server, 8082 OIDC client, 8083 SCIM provisioning) means changing the
+  realm export, the `appsettings.json` files and the README together.
 - Do not start Docker containers or the examples' Keycloak without checking for an existing
-  compose project of the same name. A conformance run of the Java repository next door binds the
+  compose project of the same name (`docker ps -a --filter label=com.docker.compose.project=easyssf-dotnet-examples`);
+  the compose file sets `name: easyssf-dotnet-examples` for that reason, never remove the `name`,
+  and never run `down -v` or delete volumes you did not create. A conformance run of the Java repository next door binds the
   same ports (suite 18443, receiver 9444); check `docker ps` first and move with `CTS_SUITE_PORT`
   and `CTS_RECEIVER_PORT` rather than stopping containers you did not start.

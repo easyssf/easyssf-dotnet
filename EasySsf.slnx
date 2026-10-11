@@ -8,6 +8,11 @@
     <Project Path="src/EasySsf.Testing/EasySsf.Testing.csproj" />
     <Project Path="src/EasySsf.Testing.Conformance/EasySsf.Testing.Conformance.csproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/EasySsf.Examples.ResourceServer/EasySsf.Examples.ResourceServer.csproj" />
+    <Project Path="examples/EasySsf.Examples.OidcClient/EasySsf.Examples.OidcClient.csproj" />
+    <Project Path="examples/EasySsf.Examples.ScimProvisioning/EasySsf.Examples.ScimProvisioning.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EasySsf.Core.Tests/EasySsf.Core.Tests.csproj" />
     <Project Path="tests/EasySsf.Receiver.Tests/EasySsf.Receiver.Tests.csproj" />
@@ -16,5 +21,6 @@
     <Project Path="tests/EasySsf.Receiver.Data.Tests/EasySsf.Receiver.Data.Tests.csproj" />
     <Project Path="tests/EasySsf.Conformance.Receiver/EasySsf.Conformance.Receiver.csproj" />
     <Project Path="tests/EasySsf.Conformance.Tests/EasySsf.Conformance.Tests.csproj" />
+    <Project Path="tests/EasySsf.Examples.ScimProvisioning.Tests/EasySsf.Examples.ScimProvisioning.Tests.csproj" />
   </Folder>
 </Solution>

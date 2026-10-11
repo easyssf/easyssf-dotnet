@@ -38,9 +38,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, and the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver |
-| Next | A Keycloak example |
-| Then | The first release on NuGet |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), the database stores that share processed SETs, revocations and poll acknowledgements between instances, the conformance harness that runs the OpenID conformance suite's receiver plans against the receiver, and the examples: a resource server and an OIDC client against Keycloak, and SCIM provisioning |
+| Next | The first release on NuGet |
+| Then | Central package versions and a `CHANGELOG.md` |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -54,6 +54,7 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 | `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the endpoint the transmitter pushes SETs to, and the revocation hooks for JwtBearer (`AddSsfTokenRevocation()`) and cookie authentication (`AddSsfSessionRevocation()`). | `EasySsf.Receiver.Hosting`, ASP.NET Core, `Microsoft.AspNetCore.Authentication.JwtBearer` |
 | `EasySsf.Receiver.Data` | The database stores of the receiver on ADO.NET, in plain SQL on the tables of the Java library: processed SETs, revocations and the acknowledgements a poller owes, shared by all instances of an application; `AddDatabaseStores()` for the host, `DbSsfSchema` with the SQL for a migration tool, a cleanup of expired rows. | `EasySsf.Receiver.Hosting`, `System.Data.Common` |
 | `EasySsf.Testing.Conformance` | Runs the OpenID conformance suite's SSF receiver test plans against a receiver under test, in any framework: the suite started with Testcontainers, the scenarios the receiver plays, the plans and the expected outcome of every module, see [Conformance](#conformance). | `EasySsf.Receiver`, Testcontainers |
+| [`examples/`](examples) | A resource server and an OIDC client that receive events from a Keycloak transmitter, with a Docker Compose setup for Keycloak, and a SCIM provisioning example with a demo transmitter of its own, see [Examples](#examples). Not published. | |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -555,6 +556,15 @@ available at the poll endpoint, `transmitter.Available = false` simulates an out
 `transmitter.AcknowledgedSets` and `transmitter.ReportedErrors` show what the receiver
 acknowledged, `transmitter.Streams` the streams it registered. A test with several transmitters
 gives each its own host with `TestTransmitter.WithMetadata(location, "okta.example")`.
+
+## Examples
+
+[`examples/`](examples) holds three applications and a Keycloak setup: a resource server
+(JwtBearer) that rejects the access tokens of a session Keycloak revoked, an OIDC client whose
+cookie is rejected once the Keycloak session ended or the password changed, and a SCIM provisioning
+example that mirrors `Users` from SCIM Events (RFC 9967) delivered by an in-process transmitter.
+The [README of the examples](examples/README.md) walks through running them; the two Keycloak
+applications contain no SSF code apart from configuration.
 
 ## Conformance
 
