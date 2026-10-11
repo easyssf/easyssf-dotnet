@@ -38,9 +38,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, and the built-in reactions: access token revocation for JwtBearer and cookie session revocation |
-| Next | ADO.NET stores for processed SETs, revocations and poll acknowledgements |
-| Then | The conformance harness; a Keycloak example |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, the built-in reactions (access token revocation for JwtBearer and cookie session revocation), and the database stores that share processed SETs, revocations and poll acknowledgements between instances |
+| Next | The conformance harness |
+| Then | A Keycloak example |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -49,9 +49,10 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 | Project | | Depends on |
 |---|---|---|
 | `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
-| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, polling, stream management, CAEP, RISC and SCIM handlers and metrics today; revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, polling, stream management, CAEP, RISC and SCIM handlers, token revocation and session termination, metrics. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `EasySsf.Receiver.Hosting` | The receiver for any `Microsoft.Extensions.Hosting` application: `SsfReceiverOptions` bound from `EasySsf:Receiver`, `AddSsfReceiver()`, the `SsfTransmitterFactory` that builds the parts from the options, validation on start, the hosted service that registers streams and polls, and a health check. | `EasySsf.Receiver`, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
 | `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the endpoint the transmitter pushes SETs to, and the revocation hooks for JwtBearer (`AddSsfTokenRevocation()`) and cookie authentication (`AddSsfSessionRevocation()`). | `EasySsf.Receiver.Hosting`, ASP.NET Core, `Microsoft.AspNetCore.Authentication.JwtBearer` |
+| `EasySsf.Receiver.Data` | The database stores of the receiver on ADO.NET, in plain SQL on the tables of the Java library: processed SETs, revocations and the acknowledgements a poller owes, shared by all instances of an application; `AddDatabaseStores()` for the host, `DbSsfSchema` with the SQL for a migration tool, a cleanup of expired rows. | `EasySsf.Receiver.Hosting`, `System.Data.Common` |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -200,10 +201,62 @@ builder.Services.AddSsfSessionRevocation();    // signs revoked cookie sessions 
 The check reads `iss`, `sub`, `sid` and `iat` from the principal, by their JWT names or the claim
 types ASP.NET Core maps them to; a cookie is compared by the time it was issued. The revocations
 live in the `ISsfTokenRevocationStore`, in memory for `Revocation:Ttl` by default, which must cover
-the longest token or cookie lifetime; register your own store to share them between instances. An
+the longest token or cookie lifetime; the [database stores](#sharing-state-between-instances) share
+them between instances. An
 application that keeps sessions server-side registers an `ISsfSessionTerminator` instead or in
 addition; the receiver then ends the sessions of the event's subject when the event arrives, with
 `SsfSubjectClaimsMatcher` deciding which sessions belong to the subject.
+
+### Sharing state between instances
+
+A SET is pushed to one instance of an application, and a revocation it records in memory is
+unknown to the others. `EasySsf.Receiver.Data` keeps that state in the database of the
+application instead, in three tables that are the same as those of the Java library:
+
+| Table | Store | Content |
+|---|---|---|
+| `EASYSSF_PROCESSED_SET` | `DbSsfJtiDedupStore` | the SETs that were processed or are being processed (`STATE`), forgotten after `Dedup:Retention` (7 days) |
+| `EASYSSF_REVOCATION` | `DbSsfTokenRevocationStore` | revoked sessions and subjects, per issuer, removed after `Revocation:Ttl` |
+| `EASYSSF_POLL_ACK` | `DbSsfPollAckStore` | acknowledgements and error reports a polling receiver owes its transmitter until a poll request carried them, forgotten after `Data:AckRetention` (7 days) |
+
+```csharp
+builder.Services.AddNpgsqlDataSource(connectionString);   // registers a DbDataSource
+builder.AddSsfReceiver().AddDatabaseStores();
+// or, for a provider without a DbDataSource:
+builder.AddSsfReceiver().AddDatabaseStores(() => new SqliteConnection(connectionString));
+```
+
+- **Tables**: in SQLite the tables are created on startup, and columns a newer release added to an
+  existing table as well. For any other database create them with your migration tool:
+  [`migration/`](src/EasySsf.Receiver.Data/migration) (one script per release that changed the
+  schema, named for Flyway, plain SQL for anything else; also `DbSsfSchema.Migrations`) keeps an
+  installation current from release to release, [`schema.sql`](src/EasySsf.Receiver.Data/schema.sql)
+  (`DbSsfSchema.SchemaSql`) is the current schema for a fresh one. Or set
+  `Data:InitializeSchema=Always` to have the receiver create and upgrade the tables itself. If a
+  table or a column is missing the host fails to start with the statements to run, rather than on
+  the first event. The stores use plain SQL (`VARCHAR`, `BIGINT`, timestamps as milliseconds since
+  the epoch, no vendor syntax; a result limit is applied by reading no further) and are tested on
+  SQLite and PostgreSQL.
+- **Several instances**: a SET is claimed before its handlers run and marked processed afterwards.
+  An instance that receives a SET another one is handling leaves it for the transmitter's redelivery,
+  neither handling nor acknowledging it, so a handler failure on the first instance is not masked by
+  an acknowledgement of the second. A claim older than `Dedup:Lease` (60 seconds) counts as abandoned
+  by a crashed instance and the SET is handled again. The guarantee is therefore at-least-once
+  processing with concurrent deliveries suppressed, not exactly once: handlers stay idempotent and
+  key their side effects by `eventContext.IdempotencyKey`. Set the lease longer than your longest
+  handler.
+- **Opting out**: `Data:Enabled=false` keeps the state in memory although the stores were added. An
+  `ISsfJtiDedupStore`, `ISsfTokenRevocationStore` or `ISsfPollAckStore` the application registered
+  itself is kept in any case.
+- **Cleanup**: expired rows are deleted when a store is written to (at most once a minute) and every
+  `Data:CleanupInterval` (15 minutes) by `DbSsfStoreCleanup` in the background; `00:00:00` turns the
+  periodic cleanup off. The stores offer `PurgeExpiredAsync()` to do it from your own scheduler.
+- **Cost**: checking an access token or cookie is one query on the primary key of
+  `EASYSSF_REVOCATION`.
+- Without a host, build the stores yourself: `ISsfDbOperations` runs their SQL, over a
+  `DbDataSource` or a connection factory (`DataSourceSsfDbOperations`, with hooks for the
+  parameter prefix and the error detection of an unusual provider) or over your own data access,
+  and `PrepareTableAsync(create)` checks or creates a store's table.
 
 ### Configuration
 
@@ -259,10 +312,17 @@ it.
 | `Dedup:Enabled` | `true` | |
 | `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |
 | `Dedup:Lease` | `00:01:00` | How long a SET counts as being handled by the instance that claimed it; longer than the longest handler. |
+| `Dedup:Retention` | `7.00:00:00` | How long the database store remembers a processed SET. |
+| `Data:Enabled` | `true` | Keep the state in the database once `AddDatabaseStores()` was called. |
+| `Data:InitializeSchema` | `Embedded` | When to create missing tables: `Embedded` (SQLite), `Always` or `Never`. |
+| `Data:TablePrefix` | `EASYSSF_` | Prefix of the table names. |
+| `Data:CleanupInterval` | `00:15:00` | How often expired rows are purged; `00:00:00` turns it off. |
+| `Data:AckRetention` | `7.00:00:00` | How long the database store keeps a poll acknowledgement no request managed to deliver. |
+| `Data:AckDeleteBatchSize` | `100` | How many delivered acknowledgements one `DELETE` of the database store removes at once. |
 | `Revocation:Enabled` | `true` | Record revocations and reject tokens of revoked sessions and users. |
 | `Revocation:SessionEventTypes` | `CaepSessionRevoked` | Events that revoke the session they name, or the user if they name none. |
 | `Revocation:UserEventTypes` | | Events that revoke the user they name, session or not; `CaepCredentialChange` for cookie sessions. |
-| `Revocation:Ttl` | `01:00:00` | How long the in-memory store remembers a revocation; at least the longest token or cookie lifetime. |
+| `Revocation:Ttl` | `01:00:00` | How long a revocation is remembered; at least the longest token or cookie lifetime. |
 | `SessionTermination:Enabled` | `true` | End server-side sessions through the registered `ISsfSessionTerminator`. |
 | `SessionTermination:SessionEventTypes` | `CaepSessionRevoked` | Events that terminate the session (or user sessions) of their subject. |
 | `SessionTermination:UserEventTypes` | `CaepCredentialChange` | Events that terminate all sessions of their subject's user. |
@@ -501,6 +561,7 @@ gives each its own host with `TestTransmitter.WithMetadata(location, "okta.examp
 dotnet build
 dotnet test
 dotnet format        # formatting per .editorconfig; CI fails on unformatted sources
+EASYSSF_DATABASE_TESTS=true dotnet test tests/EasySsf.Receiver.Data.Tests   # also on PostgreSQL, needs Docker
 ```
 
 .NET SDK 10.0.401 or a later feature band (`global.json`). The libraries build with warnings as

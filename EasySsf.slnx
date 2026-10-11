@@ -4,6 +4,7 @@
     <Project Path="src/EasySsf.Receiver/EasySsf.Receiver.csproj" />
     <Project Path="src/EasySsf.Receiver.Hosting/EasySsf.Receiver.Hosting.csproj" />
     <Project Path="src/EasySsf.Receiver.AspNetCore/EasySsf.Receiver.AspNetCore.csproj" />
+    <Project Path="src/EasySsf.Receiver.Data/EasySsf.Receiver.Data.csproj" />
     <Project Path="src/EasySsf.Testing/EasySsf.Testing.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -11,5 +12,6 @@
     <Project Path="tests/EasySsf.Receiver.Tests/EasySsf.Receiver.Tests.csproj" />
     <Project Path="tests/EasySsf.Receiver.Hosting.Tests/EasySsf.Receiver.Hosting.Tests.csproj" />
     <Project Path="tests/EasySsf.Receiver.AspNetCore.Tests/EasySsf.Receiver.AspNetCore.Tests.csproj" />
+    <Project Path="tests/EasySsf.Receiver.Data.Tests/EasySsf.Receiver.Data.Tests.csproj" />
   </Folder>
 </Solution>

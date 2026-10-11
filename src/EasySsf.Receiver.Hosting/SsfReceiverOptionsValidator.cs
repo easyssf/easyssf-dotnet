@@ -66,6 +66,19 @@ public sealed class SsfReceiverOptionsValidator : IValidateOptions<SsfReceiverOp
         {
             failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Revocation:Ttl: must be positive");
         }
+        if (options.Dedup.Retention <= TimeSpan.Zero)
+        {
+            failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Dedup:Retention: must be positive");
+        }
+        if (options.Data.TablePrefix is null || !options.Data.TablePrefix.All(c => char.IsAsciiLetterOrDigit(c) || c == '_' || c == '.'))
+        {
+            failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Data:TablePrefix: may only consist of letters, digits, '_' and '.'"
+                + $" (value: '{options.Data.TablePrefix}')");
+        }
+        if (options.Data.AckRetention <= TimeSpan.Zero || options.Data.AckDeleteBatchSize <= 0)
+        {
+            failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Data: AckRetention and AckDeleteBatchSize must be positive");
+        }
         return (failures.Count == 0) ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 

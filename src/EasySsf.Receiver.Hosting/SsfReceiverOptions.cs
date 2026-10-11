@@ -74,6 +74,11 @@ public sealed class SsfReceiverOptions : SsfTransmitterOptions
     public SsfSessionTerminationOptions SessionTermination { get; } = new();
 
     /// <summary>
+    /// The database stores of <c>EasySsf.Receiver.Data</c>, when the application added them.
+    /// </summary>
+    public SsfDataOptions Data { get; } = new();
+
+    /// <summary>
     /// Whether the default transmitter is configured: an issuer is set at <c>EasySsf:Receiver</c>.
     /// </summary>
     public bool HasDefaultTransmitter => !string.IsNullOrWhiteSpace(TransmitterIssuer);
@@ -140,6 +145,74 @@ public sealed class SsfMetricsOptions
     /// switched off here.
     /// </summary>
     public bool Enabled { get; set; } = true;
+}
+
+/// <summary>
+/// The database stores of <c>EasySsf.Receiver.Data</c>, which keep processed SETs, revocations and
+/// the acknowledgements a poller owes in the database of the application, shared by all its
+/// instances. They take effect when the application adds them with <c>AddDatabaseStores()</c>.
+/// </summary>
+public sealed class SsfDataOptions
+{
+    /// <summary>
+    /// Whether the database stores are used. <see langword="false"/> keeps the state of the receiver
+    /// in memory although the stores were added, for example in a test environment.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// When to create the tables if they do not exist: for embedded databases (SQLite) only, which
+    /// is the default, always, or never.
+    /// </summary>
+    public SsfSchemaInitialization InitializeSchema { get; set; } = SsfSchemaInitialization.Embedded;
+
+    /// <summary>
+    /// Prefix of the names of the tables, <c>EASYSSF_</c> by default. Letters, digits, <c>_</c> and
+    /// <c>.</c> (for a schema) only.
+    /// </summary>
+    public string TablePrefix { get; set; } = "EASYSSF_";
+
+    /// <summary>
+    /// How often expired rows (processed SETs past <c>Dedup:Retention</c>, revocations past
+    /// <c>Revocation:Ttl</c>, acknowledgements past <see cref="AckRetention"/>) are purged. The
+    /// stores also purge when they are written to; zero turns the periodic cleanup off. 15 minutes
+    /// by default.
+    /// </summary>
+    public TimeSpan CleanupInterval { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How long the store keeps an acknowledgement a polling receiver owes its transmitter if no
+    /// poll request manages to deliver it. 7 days by default.
+    /// </summary>
+    public TimeSpan AckRetention { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// How many acknowledgements one DELETE of the store removes at once; databases limit the
+    /// parameters of a statement. 100 by default.
+    /// </summary>
+    public int AckDeleteBatchSize { get; set; } = 100;
+}
+
+/// <summary>
+/// When the database stores create their tables.
+/// </summary>
+public enum SsfSchemaInitialization
+{
+    /// <summary>
+    /// Only in an embedded database (SQLite), which has no migration tool of its own.
+    /// </summary>
+    Embedded,
+
+    /// <summary>
+    /// Whenever a table is missing, and add the columns of this release to a table of an older one.
+    /// </summary>
+    Always,
+
+    /// <summary>
+    /// Never: the application creates the tables, with the SQL that ships with the stores. A missing
+    /// or outdated table fails the start with the statements to run.
+    /// </summary>
+    Never,
 }
 
 /// <summary>

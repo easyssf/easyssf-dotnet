@@ -3,12 +3,13 @@
 #   changes ─┬─ sign-off (pull requests)
 #            ├─ docs       link and spell check of the Markdown files, when any changed
 #            └─ build      formatting, then every project and its tests on Ubuntu
-#                 └─ platforms  the same on Windows and macOS
+#                 ├─ platforms  the same on Windows and macOS
+#                 └─ database   the Data tests on PostgreSQL in Docker (EASYSSF_DATABASE_TESTS)
 #   status     the one check to require in branch protection
 #
 # A change that touches only documentation runs sign-off and docs; a failure in build stops
-# everything behind it. Tests that will need Docker (the ADO.NET stores, the conformance harness)
-# are to be kept behind a trait and get a job of their own when they arrive.
+# everything behind it. The normal test run needs no Docker: the PostgreSQL cases of the Data
+# tests only exist when EASYSSF_DATABASE_TESTS is set, which the database job does.
 name: CI
 
 on:
@@ -172,11 +173,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The database stores on PostgreSQL, in a Testcontainers container on the Docker of the runner.
+  database:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EASYSSF_DATABASE_TESTS: 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Test the stores on PostgreSQL
+        run: dotnet test tests/EasySsf.Receiver.Data.Tests --configuration Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-database
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+          retention-days: 14
+
   # The one check for branch protection: green when every job that had to run succeeded. Jobs the
   # change did not need are skipped and count as green.
   status:
     if: always()
-    needs: [changes, sign-off, docs, build, platforms]
+    needs: [changes, sign-off, docs, build, platforms, database]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

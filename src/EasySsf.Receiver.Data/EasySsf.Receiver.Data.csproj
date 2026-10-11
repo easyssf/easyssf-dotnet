@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Database stores of the easyssf SSF receiver on ADO.NET: processed SETs, revocations and poll acknowledgements shared by the instances of an application.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EasySsf.Receiver.Hosting\EasySsf.Receiver.Hosting.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the SQL of the tables, for applications that create them with a migration tool; see DbSsfSchema -->
+    <EmbeddedResource Include="schema.sql" LogicalName="schema.sql" />
+    <EmbeddedResource Include="migration\*.sql" LogicalName="migration/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

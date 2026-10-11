@@ -71,11 +71,12 @@ public static class SsfReceiverServiceCollectionExtensions
     public static SsfReceiverBuilder AddSsfReceiver(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
-        if (services.Any(descriptor => descriptor.ServiceType == typeof(SsfReceiverMarker)))
+        if (services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(SsfReceiverMarker)) is { ImplementationInstance: SsfReceiverMarker added })
         {
-            return new SsfReceiverBuilder(services);
+            return new SsfReceiverBuilder(services, added);
         }
-        services.AddSingleton<SsfReceiverMarker>();
+        SsfReceiverMarker marker = new();
+        services.AddSingleton(marker);
         services.AddOptions<SsfReceiverOptions>().ValidateOnStart();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<SsfReceiverOptions>, SsfReceiverOptionsValidator>());
         services.AddLogging();
@@ -97,7 +98,7 @@ public static class SsfReceiverServiceCollectionExtensions
             client.Timeout = timeout;
             UserAgent(client, options);
         });
-        services.TryAddSingleton<ISsfJtiDedupStore>(provider =>
+        marker.TryAddDefaultStore<ISsfJtiDedupStore>(services, provider =>
         {
             SsfDedupOptions dedup = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value.Dedup;
             return new InMemorySsfJtiDedupStore(dedup.Capacity, dedup.Lease);
@@ -177,7 +178,7 @@ public static class SsfReceiverServiceCollectionExtensions
                 ? new SsfPushHandler(processor, transmitters.All[0].PushAuthorizationHeader, metrics, logger)
                 : new SsfPushHandler(processor, transmitters.PushAuthorizationHeader, metrics, logger);
         });
-        services.TryAddSingleton<ISsfTokenRevocationStore>(provider =>
+        marker.TryAddDefaultStore<ISsfTokenRevocationStore>(services, provider =>
         {
             SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
             return new InMemorySsfTokenRevocationStore(options.Revocation.Ttl);
@@ -205,14 +206,35 @@ public static class SsfReceiverServiceCollectionExtensions
         });
         services.TryAddSingleton<SsfReceiverHealthCheck>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, SsfReceiverHostedService>());
-        return new SsfReceiverBuilder(services);
+        return new SsfReceiverBuilder(services, marker);
     }
 
     /// <summary>
     /// Marks that <see cref="AddSsfReceiver(IServiceCollection)"/> ran, so that a second call adds
-    /// nothing twice.
+    /// nothing twice, and remembers the stores it registered by default, so that
+    /// <see cref="SsfReceiverBuilder.ReplaceDefaultStore{TStore}"/> replaces those and nothing else.
     /// </summary>
-    private sealed class SsfReceiverMarker;
+    internal sealed class SsfReceiverMarker
+    {
+        private readonly List<ServiceDescriptor> _defaultStores = [];
+
+        public void TryAddDefaultStore<TStore>(IServiceCollection services, Func<IServiceProvider, TStore> factory)
+                where TStore : class
+        {
+            if (services.Any(descriptor => descriptor.ServiceType == typeof(TStore)))
+            {
+                return;
+            }
+            ServiceDescriptor descriptor = ServiceDescriptor.Singleton(factory);
+            services.Add(descriptor);
+            _defaultStores.Add(descriptor);
+        }
+
+        public bool IsDefaultStore(ServiceDescriptor descriptor)
+        {
+            return _defaultStores.Contains(descriptor);
+        }
+    }
 
     /// <summary>
     /// Stands in for an integration that is switched off or has nothing to work with.
@@ -270,9 +292,12 @@ public static class SsfReceiverServiceCollectionExtensions
 /// </summary>
 public sealed class SsfReceiverBuilder
 {
-    internal SsfReceiverBuilder(IServiceCollection services)
+    private readonly SsfReceiverServiceCollectionExtensions.SsfReceiverMarker _marker;
+
+    internal SsfReceiverBuilder(IServiceCollection services, SsfReceiverServiceCollectionExtensions.SsfReceiverMarker marker)
     {
         Services = services;
+        _marker = marker;
     }
 
     /// <summary>
@@ -330,6 +355,32 @@ public sealed class SsfReceiverBuilder
     {
         Services.AddSingleton(SsfEventHandler.For(aliasOrUri, handler));
         return this;
+    }
+
+    /// <summary>
+    /// Replaces a store the receiver registered by default, the in-memory <see cref="ISsfJtiDedupStore"/>
+    /// or <see cref="ISsfTokenRevocationStore"/>, and adds a store it did not register, such as the
+    /// <see cref="ISsfPollAckStore"/>. A store the application registered itself is kept, so an
+    /// integration like the database stores does not override the application's choice.
+    /// </summary>
+    /// <returns>whether the store was added or replaced</returns>
+    public bool ReplaceDefaultStore<TStore>(Func<IServiceProvider, TStore> factory)
+            where TStore : class
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        ServiceDescriptor? existing = Services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(TStore));
+        if (existing is null)
+        {
+            Services.AddSingleton(factory);
+            return true;
+        }
+        if (!_marker.IsDefaultStore(existing))
+        {
+            return false;
+        }
+        Services.Remove(existing);
+        Services.AddSingleton(factory);
+        return true;
     }
 
     /// <summary>

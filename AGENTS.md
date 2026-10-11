@@ -30,11 +30,12 @@ order:
 | `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push and poll, stream management, transmitter assembly, handlers (generic and per event family), the revocation store and session termination, metrics | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `src/EasySsf.Receiver.Hosting` | Options bound from `EasySsf:Receiver`, `AddSsfReceiver()`, `SsfTransmitterFactory`, options validation, the hosted service and the health check | Receiver, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
 | `src/EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the push endpoint; `AddSsfTokenRevocation()` and `AddSsfSessionRevocation()`, the JwtBearer and cookie hooks | Hosting, `Microsoft.AspNetCore.App`, `Microsoft.AspNetCore.Authentication.JwtBearer` |
-| `tests/EasySsf.*.Tests` | xUnit tests, ported from the Java modules; the AspNetCore tests start Kestrel on a random port | the project under test, Testing |
+| `src/EasySsf.Receiver.Data` | The database stores (processed SETs, revocations, poll acknowledgements) in plain SQL over `ISsfDbOperations`, `DbSsfSchema` with the SQL and migrations, `AddDatabaseStores()`, the cleanup hosted service | Hosting, `System.Data.Common` |
+| `tests/EasySsf.*.Tests` | xUnit tests, ported from the Java modules; the AspNetCore tests start Kestrel on a random port, the Data tests run on SQLite files and, opted in, PostgreSQL in Docker | the project under test, Testing |
 
-Planned, in this order: `EasySsf.Receiver.Data` (ADO.NET stores, same tables as the Java JDBC
-module), `tests/EasySsf.Conformance`. New protocol behaviour goes into `EasySsf.Receiver`, new vocabulary
-into `EasySsf.Core`, framework code only into the Hosting and AspNetCore projects.
+Planned: `tests/EasySsf.Conformance`, a Keycloak example. New protocol behaviour goes into
+`EasySsf.Receiver`, new vocabulary into `EasySsf.Core`, framework code only into the Hosting,
+AspNetCore and Data projects.
 
 ## Porting
 
@@ -62,9 +63,12 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - `src/Directory.Build.props` sets `TreatWarningsAsErrors`, `IsAotCompatible` and XML
   documentation for the libraries. An `IL2026`/`IL3050` error means a reflection-based or
   dynamic-code path crept in; fix the code, do not suppress the warning.
-- The tests need no network and no Docker: `TestTransmitter` answers in-process. Tests that will
-  need Docker (ADO.NET stores, the conformance harness) are to be kept behind a trait so that the
-  normal `dotnet test` stays self-contained.
+- The tests need no network and no Docker: `TestTransmitter` answers in-process and the Data
+  tests use SQLite files. `EASYSSF_DATABASE_TESTS=true dotnet test tests/EasySsf.Receiver.Data.Tests`
+  runs them on PostgreSQL as well, in a Testcontainers container (Docker required; CI does this in
+  the `database` job). The database tests are `[Theory]`s over `TestDatabase.All`, which lists the
+  PostgreSQL case only when the variable is set, so nothing is skipped or filtered. Run them when the
+  SQL or the schema changes, and say so.
 - **Options bind from configuration with the binding source generator**
   (`EnableConfigurationBindingGenerator`), so the Hosting package stays AOT-safe. Binding adds to
   a list instead of replacing it, so a list setting with a default starts empty and an
@@ -73,8 +77,20 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   non-empty default. Configuration keys are PascalCase with colons (`EasySsf:Receiver:Poll:Interval`)
   and messages name them that way; `SsfTransmitterFactory.Prefix(name)` builds the prefix.
 - **Services registered before `AddSsfReceiver()` win** (`TryAdd`): a store, metrics or ack store
-  of the application replaces the default. The parts of a transmitter are not services; replace
-  them with an `ISsfTransmitterCustomizer`.
+  of the application replaces the default. An integration that brings stores of its own, like the
+  Data project, uses `SsfReceiverBuilder.ReplaceDefaultStore`, which replaces only the stores the
+  receiver registered by default. The parts of a transmitter are not services; replace them with
+  an `ISsfTransmitterCustomizer`.
+- **The database stores are plain SQL** over `ISsfDbOperations`: `?` placeholders in the order of
+  the arguments, `VARCHAR`/`BIGINT`, timestamps as milliseconds since the epoch, no vendor syntax;
+  a result limit goes through `QueryAsync(sql, maxRows, ...)` (the reader stops), never `LIMIT`,
+  `TOP` or `FETCH FIRST`. `schema.sql` is the current schema and has to run unchanged on SQLite,
+  PostgreSQL and MySQL (the Java library shares the tables, keep them identical). Every schema
+  change also ships `migration/V<release>__<topic>.sql`, an entry in `DbSsfSchema.Migrations`
+  and, for a new or renamed column, an entry in the table's `*Upgrades` list so that
+  `PrepareTableAsync` adds it where it may create tables; `MigrationScriptsLeadToTheCurrentSchema`
+  checks that the scripts end at the current schema. `DbSharedReceiversTests` is the place for
+  multi-instance scenarios (two pollers, one database).
 - **Authentication hooks are options extensions** (`UseSsfTokenRevocation()` on `JwtBearerOptions`,
   `UseSsfSessionRevocation()` on `CookieAuthenticationOptions`) that chain the existing event
   handler, plus `AddSsf...()` service extensions that apply them with `PostConfigure` so the
