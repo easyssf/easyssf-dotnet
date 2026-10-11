@@ -28,10 +28,11 @@ order:
 | `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `JsonElement` | BCL only |
 | `src/EasySsf.Testing` | `TestTransmitter`, an in-process transmitter that signs SETs, serves its JWK Set and metadata, issues tokens and emulates stream management and polling through an `HttpMessageHandler` | Core |
 | `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push and poll, stream management, transmitter assembly, handlers (generic and per event family) and metrics; later revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
-| `tests/EasySsf.Core.Tests`, `tests/EasySsf.Receiver.Tests` | xUnit tests, ported from the Java modules | the project under test, Testing |
+| `src/EasySsf.Receiver.Hosting` | Options bound from `EasySsf:Receiver`, `AddSsfReceiver()`, `SsfTransmitterFactory`, options validation, the hosted service and the health check | Receiver, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
+| `src/EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the push endpoint | Hosting, `Microsoft.AspNetCore.App` |
+| `tests/EasySsf.*.Tests` | xUnit tests, ported from the Java modules; the AspNetCore tests start Kestrel on a random port | the project under test, Testing |
 
-Planned, in this order: `EasySsf.Receiver.Hosting` (options, DI, background services, health),
-`EasySsf.Receiver.AspNetCore` (push endpoint, JwtBearer and cookie integration),
+Planned, in this order: JwtBearer revocation and cookie session termination (in AspNetCore),
 `EasySsf.Receiver.Data` (ADO.NET stores, same tables as the Java JDBC module),
 `tests/EasySsf.Conformance`. New protocol behaviour goes into `EasySsf.Receiver`, new vocabulary
 into `EasySsf.Core`, framework code only into the Hosting and AspNetCore projects.
@@ -65,6 +66,16 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - The tests need no network and no Docker: `TestTransmitter` answers in-process. Tests that will
   need Docker (ADO.NET stores, the conformance harness) are to be kept behind a trait so that the
   normal `dotnet test` stays self-contained.
+- **Options bind from configuration with the binding source generator**
+  (`EnableConfigurationBindingGenerator`), so the Hosting package stays AOT-safe. Binding adds to
+  a list instead of replacing it, so a list setting with a default starts empty and an
+  `Effective...` property resolves the default (`EffectiveAcceptedAlgorithms`,
+  `EffectiveEventsRequested`, `EffectiveUnderstoodSubjectMembers`). Never give a bound list a
+  non-empty default. Configuration keys are PascalCase with colons (`EasySsf:Receiver:Poll:Interval`)
+  and messages name them that way; `SsfTransmitterFactory.Prefix(name)` builds the prefix.
+- **Services registered before `AddSsfReceiver()` win** (`TryAdd`): a store, metrics or ack store
+  of the application replaces the default. The parts of a transmitter are not services; replace
+  them with an `ISsfTransmitterCustomizer`.
 - **Background work is `Task`-based.** Poller and registrar run on `Task.Run` with a
   `CancellationTokenSource`; `Start()` is synchronous, `StopAsync()` cancels and awaits. Tests of
   background behaviour use `Eventually.UntilAsync` / `DuringAsync` (the Awaitility of this repo)
@@ -127,8 +138,9 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 ## Documentation that changes with the code
 
 - `README.md` is the user document: its "State of the port" table says what is done and what comes
-  next, and a new option, alias, subject format or handler is documented there in the same change.
-  Keep its examples compiling against the current API.
+  next, its "Configuration" table lists every setting with its default, and a new option, alias,
+  subject format or handler is documented there in the same change. Keep its examples compiling
+  against the current API.
 - `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
   Until then, `scratch/porting.md` records state and decisions (see Porting).
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.

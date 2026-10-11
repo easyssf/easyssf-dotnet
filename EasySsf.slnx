@@ -2,10 +2,14 @@
   <Folder Name="/src/">
     <Project Path="src/EasySsf.Core/EasySsf.Core.csproj" />
     <Project Path="src/EasySsf.Receiver/EasySsf.Receiver.csproj" />
+    <Project Path="src/EasySsf.Receiver.Hosting/EasySsf.Receiver.Hosting.csproj" />
+    <Project Path="src/EasySsf.Receiver.AspNetCore/EasySsf.Receiver.AspNetCore.csproj" />
     <Project Path="src/EasySsf.Testing/EasySsf.Testing.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EasySsf.Core.Tests/EasySsf.Core.Tests.csproj" />
     <Project Path="tests/EasySsf.Receiver.Tests/EasySsf.Receiver.Tests.csproj" />
+    <Project Path="tests/EasySsf.Receiver.Hosting.Tests/EasySsf.Receiver.Hosting.Tests.csproj" />
+    <Project Path="tests/EasySsf.Receiver.AspNetCore.Tests/EasySsf.Receiver.AspNetCore.Tests.csproj" />
   </Folder>
 </Solution>

@@ -1,0 +1,310 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
+using System.Net.Http.Headers;
+
+using EasySsf.Core.Event;
+using EasySsf.Receiver.Event;
+using EasySsf.Receiver.Metrics;
+using EasySsf.Receiver.Poll;
+using EasySsf.Receiver.Push;
+using EasySsf.Receiver.Set;
+using EasySsf.Receiver.Transmitter;
+
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace EasySsf.Receiver.Hosting;
+
+/// <summary>
+/// Registers the SSF receiver with the dependency injection container.
+/// </summary>
+public static class SsfReceiverServiceCollectionExtensions
+{
+    /// <summary>
+    /// Adds the receiver with the options bound from the <see cref="SsfReceiverDefaults.ConfigurationSection"/>
+    /// section of the application's configuration, and the health check.
+    /// </summary>
+    public static SsfReceiverBuilder AddSsfReceiver(this IHostApplicationBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.Services.AddSsfReceiver(builder.Configuration.GetSection(SsfReceiverDefaults.ConfigurationSection));
+    }
+
+    /// <summary>
+    /// Adds the receiver with the options bound from the given configuration section.
+    /// </summary>
+    public static SsfReceiverBuilder AddSsfReceiver(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        SsfReceiverBuilder builder = services.AddSsfReceiver();
+        services.Configure<SsfReceiverOptions>(configuration);
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds the receiver with the options configured in code.
+    /// </summary>
+    public static SsfReceiverBuilder AddSsfReceiver(this IServiceCollection services, Action<SsfReceiverOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        SsfReceiverBuilder builder = services.AddSsfReceiver();
+        services.Configure(configure);
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds the receiver: options with validation on start, the <see cref="HttpClient"/>s that
+    /// call the transmitters, the in-memory de-duplication store, metrics if the application has an
+    /// <see cref="IMeterFactory"/>, the <see cref="SsfSetProcessor"/>, the
+    /// <see cref="SsfTransmitters"/> built from the options, the <see cref="SsfPushHandler"/>, and
+    /// the hosted service that runs the stream registration and polling. Services registered before
+    /// this call are kept: register your own <see cref="ISsfJtiDedupStore"/>,
+    /// <see cref="ISsfPollAckStore"/> or <see cref="ISsfReceiverMetrics"/> first to replace the
+    /// defaults.
+    /// </summary>
+    public static SsfReceiverBuilder AddSsfReceiver(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.AddOptions<SsfReceiverOptions>().ValidateOnStart();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<SsfReceiverOptions>, SsfReceiverOptionsValidator>());
+        services.AddLogging();
+        services.AddHttpClient(SsfReceiverDefaults.HttpClientName).ConfigureHttpClient((provider, client) =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            client.Timeout = options.Http.Timeout;
+            UserAgent(client, options);
+        });
+        services.AddHttpClient(SsfReceiverDefaults.PollHttpClientName).ConfigureHttpClient((provider, client) =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            TimeSpan timeout = options.Http.Timeout;
+            foreach (SsfTransmitterOptions transmitter in SafeTransmitters(options))
+            {
+                TimeSpan needed = SsfTransmitterFactory.PollHttpClientTimeout(transmitter, options.Http.Timeout);
+                timeout = (needed > timeout) ? needed : timeout;
+            }
+            client.Timeout = timeout;
+            UserAgent(client, options);
+        });
+        services.TryAddSingleton<ISsfJtiDedupStore>(provider =>
+        {
+            SsfDedupOptions dedup = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value.Dedup;
+            return new InMemorySsfJtiDedupStore(dedup.Capacity, dedup.Lease);
+        });
+        services.TryAddSingleton<ISsfReceiverMetrics>(provider =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            IMeterFactory? meterFactory = provider.GetService<IMeterFactory>();
+            if (!options.Metrics.Enabled || meterFactory is null)
+            {
+                return NullSsfReceiverMetrics.Instance;
+            }
+            // the transmitters are built after the metrics, so they are looked up per measurement
+            return new MeterSsfReceiverMetrics(meterFactory, issuer => provider.GetService<SsfTransmitters>()?.NameOf(issuer) ?? issuer);
+        });
+        services.TryAddSingleton(provider =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            SsfReceiverOptionsValidator.RegisterEventAliases(options);
+            SsfSetProcessorOptions processorOptions = new()
+            {
+                Metrics = provider.GetRequiredService<ISsfReceiverMetrics>(),
+                StreamVerifications = issuer => provider.GetRequiredService<SsfTransmitters>().StreamVerification(issuer),
+                CriticalSubjectMembers = issuer => provider.GetRequiredService<SsfTransmitters>().CriticalSubjectMembers(issuer),
+            };
+            processorOptions.UnderstoodSubjectMembers.Clear();
+            foreach (string member in options.EffectiveUnderstoodSubjectMembers)
+            {
+                processorOptions.UnderstoodSubjectMembers.Add(member);
+            }
+            // the issuer of a SET selects the transmitter that verifies it; the transmitters are
+            // looked up when the first SET arrives, as their pollers need the processor
+            ISsfSetVerifier verifier = new TransmittersVerifier(provider);
+            ISsfJtiDedupStore? dedupStore = options.Dedup.Enabled ? provider.GetRequiredService<ISsfJtiDedupStore>() : null;
+            return new SsfSetProcessor(verifier, dedupStore, provider.GetServices<ISsfEventHandler>(), processorOptions,
+                provider.GetRequiredService<ILogger<SsfSetProcessor>>());
+        });
+        services.TryAddSingleton(provider =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            SsfReceiverOptionsValidator.ThrowIfInvalid(options);
+            IHttpClientFactory httpClients = provider.GetRequiredService<IHttpClientFactory>();
+            ILoggerFactory loggerFactory = provider.GetRequiredService<ILoggerFactory>();
+            SsfSetProcessor processor = provider.GetRequiredService<SsfSetProcessor>();
+            ISsfReceiverMetrics metrics = provider.GetRequiredService<ISsfReceiverMetrics>();
+            ISsfPollAckStore? ackStore = provider.GetService<ISsfPollAckStore>();
+            IEnumerable<ISsfTransmitterCustomizer> customizers = provider.GetServices<ISsfTransmitterCustomizer>();
+            List<SsfTransmitter> transmitters = [];
+            foreach ((string name, SsfTransmitterOptions transmitterOptions) in options.ConfiguredTransmitters())
+            {
+                SsfTransmitterBuilder builder = SsfTransmitterFactory.Builder(name, transmitterOptions,
+                    httpClients.CreateClient(SsfReceiverDefaults.HttpClientName), httpClients.CreateClient(SsfReceiverDefaults.PollHttpClientName),
+                    processor, metrics, ackStore, loggerFactory);
+                foreach (ISsfTransmitterCustomizer customizer in customizers)
+                {
+                    customizer.Customize(builder);
+                }
+                transmitters.Add(builder.Build());
+            }
+            try
+            {
+                return new SsfTransmitters(transmitters);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new SsfReceiverConfigurationException(SsfReceiverDefaults.ConfigurationSection + ":Transmitters", null, ex.Message);
+            }
+        });
+        services.TryAddSingleton(provider =>
+        {
+            SsfTransmitters transmitters = provider.GetRequiredService<SsfTransmitters>();
+            SsfSetProcessor processor = provider.GetRequiredService<SsfSetProcessor>();
+            ISsfReceiverMetrics metrics = provider.GetRequiredService<ISsfReceiverMetrics>();
+            ILogger<SsfPushHandler> logger = provider.GetRequiredService<ILogger<SsfPushHandler>>();
+            // with one transmitter the header is checked before the SET is even parsed
+            return (transmitters.All.Count == 1)
+                ? new SsfPushHandler(processor, transmitters.All[0].PushAuthorizationHeader, metrics, logger)
+                : new SsfPushHandler(processor, transmitters.PushAuthorizationHeader, metrics, logger);
+        });
+        services.TryAddSingleton<SsfReceiverHealthCheck>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, SsfReceiverHostedService>());
+        return new SsfReceiverBuilder(services);
+    }
+
+    private static void UserAgent(HttpClient client, SsfReceiverOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.Http.UserAgent)
+                && ProductInfoHeaderValue.TryParse(options.Http.UserAgent, out ProductInfoHeaderValue? userAgent))
+        {
+            client.DefaultRequestHeaders.UserAgent.Add(userAgent);
+        }
+    }
+
+    private static IEnumerable<SsfTransmitterOptions> SafeTransmitters(SsfReceiverOptions options)
+    {
+        try
+        {
+            return options.ConfiguredTransmitters().Values;
+        }
+        catch (SsfReceiverConfigurationException)
+        {
+            // reported by the validation
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Verifies a SET with the transmitter that issued it, looked up on first use.
+    /// </summary>
+    private sealed class TransmittersVerifier(IServiceProvider provider) : ISsfSetVerifier
+    {
+        private SsfTransmitters? _transmitters;
+
+        public Task<Core.Event.SsfEventToken> VerifyAsync(string encodedSet, CancellationToken cancellationToken = default)
+        {
+            _transmitters ??= provider.GetRequiredService<SsfTransmitters>();
+            return _transmitters.Verifier.VerifyAsync(encodedSet, cancellationToken);
+        }
+    }
+}
+
+/// <summary>
+/// Adds handlers and customizations to the receiver registered with
+/// <see cref="SsfReceiverServiceCollectionExtensions.AddSsfReceiver(IServiceCollection)"/>.
+/// </summary>
+public sealed class SsfReceiverBuilder
+{
+    internal SsfReceiverBuilder(IServiceCollection services)
+    {
+        Services = services;
+    }
+
+    /// <summary>
+    /// The services of the application.
+    /// </summary>
+    public IServiceCollection Services { get; }
+
+    /// <summary>
+    /// Configures the options in code, after any configuration binding.
+    /// </summary>
+    public SsfReceiverBuilder Configure(Action<SsfReceiverOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        Services.Configure(configure);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds an event handler, invoked for every SET.
+    /// </summary>
+    public SsfReceiverBuilder AddEventHandler<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>()
+            where THandler : class, ISsfEventHandler
+    {
+        Services.TryAddEnumerable(ServiceDescriptor.Singleton<ISsfEventHandler, THandler>());
+        return this;
+    }
+
+    /// <summary>
+    /// Adds an event handler, invoked for every SET.
+    /// </summary>
+    public SsfReceiverBuilder AddEventHandler(ISsfEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        Services.AddSingleton(handler);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds an event handler built from the services, invoked for every SET.
+    /// </summary>
+    public SsfReceiverBuilder AddEventHandler(Func<IServiceProvider, ISsfEventHandler> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        Services.AddSingleton(factory);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a handler for the SETs that contain the given event.
+    /// </summary>
+    /// <param name="aliasOrUri">an alias such as <c>CaepSessionRevoked</c> or an event type URI</param>
+    /// <param name="handler">the handler</param>
+    /// <seealso cref="SsfEventHandler.For"/>
+    public SsfReceiverBuilder AddEventHandler(string aliasOrUri, Func<SsfEventContext, CancellationToken, Task> handler)
+    {
+        Services.AddSingleton(SsfEventHandler.For(aliasOrUri, handler));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a customizer that is called for every transmitter before it is built.
+    /// </summary>
+    public SsfReceiverBuilder AddTransmitterCustomizer(Action<SsfTransmitterBuilder> customize)
+    {
+        ArgumentNullException.ThrowIfNull(customize);
+        Services.AddSingleton<ISsfTransmitterCustomizer>(new DelegateCustomizer(customize));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a customizer that is called for every transmitter before it is built.
+    /// </summary>
+    public SsfReceiverBuilder AddTransmitterCustomizer<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TCustomizer>()
+            where TCustomizer : class, ISsfTransmitterCustomizer
+    {
+        Services.TryAddEnumerable(ServiceDescriptor.Singleton<ISsfTransmitterCustomizer, TCustomizer>());
+        return this;
+    }
+
+    private sealed class DelegateCustomizer(Action<SsfTransmitterBuilder> customize) : ISsfTransmitterCustomizer
+    {
+        public void Customize(SsfTransmitterBuilder builder)
+        {
+            customize(builder);
+        }
+    }
+}

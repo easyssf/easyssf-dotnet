@@ -12,20 +12,22 @@ discovery, PUSH and POLL delivery, stream management and replay protection yours
 that reacting to a security event is a handler:
 
 ```csharp
-ISsfEventHandler handler = SsfEventHandler.For("CaepSessionRevoked", (context, cancellationToken) =>
+builder.AddSsfReceiver().AddEventHandler("CaepSessionRevoked", (context, cancellationToken) =>
 {
     SsfSubject subject = context.SubjectFor("CaepSessionRevoked");
     // end what you hold for subject.SessionId or subject.Subject
     return Task.CompletedTask;
 });
+app.MapSsfPush();
 ```
 
-A few lines wire the parts together, see [Receiving pushed SETs](#receiving-pushed-sets); the
-hosting and ASP.NET Core integration that does it for you is on the way.
+With the hosting package the transmitter is configuration, see
+[Getting started](#getting-started); without a framework a few lines wire the parts together, see
+[Receiving pushed SETs](#receiving-pushed-sets).
 
 | | |
 |---|---|
-| **Status** | Experimental, pre-alpha: the port is in progress, nothing is on NuGet yet |
+| **Status** | Experimental, pre-alpha: the receiver and its hosting are ported, nothing is on NuGet yet |
 | **.NET** | 10 |
 | **Package prefix** | `EasySsf` |
 | **License** | Apache-2.0 |
@@ -36,9 +38,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver |
-| Next | Hosting and ASP.NET Core: options, DI, `MapSsfPush`, metrics, health |
-| Then | Token revocation and session termination; ADO.NET stores; the conformance harness |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check) and the ASP.NET Core push endpoint |
+| Next | Token revocation for JwtBearer resource servers and session termination for cookie-authenticated OIDC clients |
+| Then | ADO.NET stores; the conformance harness; a Keycloak example |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -48,6 +50,8 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 |---|---|---|
 | `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
 | `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, polling, stream management, CAEP, RISC and SCIM handlers and metrics today; revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `EasySsf.Receiver.Hosting` | The receiver for any `Microsoft.Extensions.Hosting` application: `SsfReceiverOptions` bound from `EasySsf:Receiver`, `AddSsfReceiver()`, the `SsfTransmitterFactory` that builds the parts from the options, validation on start, the hosted service that registers streams and polls, and a health check. | `EasySsf.Receiver`, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
+| `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`: the endpoint the transmitter pushes SETs to, for minimal APIs and MVC alike. | `EasySsf.Receiver.Hosting`, ASP.NET Core |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -90,6 +94,159 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
   event-specific ones of section 3), `SsfRiscEvent` (RISC 1.0) and `SsfScimEvent` with
   `SsfScimSubject` (SCIM Events, RFC 9967), each read from a SET with `In(eventToken)`, and the
   handler base classes that dispatch them, see [Typed handlers](#typed-handlers).
+
+## Getting started
+
+Reference `EasySsf.Receiver.Hosting` and, for push delivery, `EasySsf.Receiver.AspNetCore`.
+Configure the transmitter, register the receiver and your handlers, and map the push endpoint:
+
+```json
+{
+  "EasySsf": {
+    "Receiver": {
+      "TransmitterIssuer": "https://idp.example/realms/demo",
+      "ExpectedAudience": "https://my-app.example",
+      "Push": { "ExpectedAuthHeader": "Bearer s3cr3t" }
+    }
+  }
+}
+```
+
+```csharp
+using EasySsf.Receiver.AspNetCore;
+using EasySsf.Receiver.Hosting;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.AddSsfReceiver()                       // binds EasySsf:Receiver, validates on start
+    .AddEventHandler<SessionRevokedHandler>()  // any ISsfEventHandler, SsfCaepEventHandler, ...
+    .AddEventHandler("CaepCredentialChange", (context, ct) => credentials.ChangedAsync(context.Subject, ct));
+builder.Services.AddHealthChecks().AddSsfReceiver();
+
+var app = builder.Build();
+app.MapSsfPush();                              // POST /ssf/push, anonymous: the SET authenticates itself
+app.MapHealthChecks("/healthz");
+app.Run();
+```
+
+The transmitter's metadata is discovered from its issuer on first use, so the application starts
+even while the transmitter is down. To poll instead of being pushed to, and to let the receiver
+register its own stream:
+
+```json
+{
+  "EasySsf": {
+    "Receiver": {
+      "TransmitterIssuer": "https://idp.example/realms/demo",
+      "DeliveryMethod": "Poll",
+      "Stream": { "Management": "Receiver", "EventsRequested": ["CaepSessionRevoked", "CaepCredentialChange"] },
+      "Poll": { "LongPolling": true },
+      "OAuth2": {
+        "TokenUri": "https://idp.example/realms/demo/protocol/openid-connect/token",
+        "ClientId": "my-app", "ClientSecret": "..."
+      }
+    }
+  }
+}
+```
+
+The hosted service registers the stream and starts polling when the host starts, and acknowledges
+what it owes the transmitter when the host stops. The audience of the stream is learned from the
+registration, so `ExpectedAudience` is not needed.
+
+Several transmitters go under `EasySsf:Receiver:Transmitters:<name>`, each with the same settings;
+the one at `EasySsf:Receiver` is named `default`. SETs are verified by the transmitter that issued
+them, and each transmitter authenticates at the push endpoint with its own header. A customizer
+replaces or adds parts of any transmitter before it is built:
+
+```csharp
+builder.AddSsfReceiver().AddTransmitterCustomizer(transmitter =>
+{
+    if (transmitter.Name == "okta")
+    {
+        transmitter.TokenProvider = new MyTokenProvider();
+    }
+});
+```
+
+Your own `ISsfJtiDedupStore`, `ISsfPollAckStore` or `ISsfReceiverMetrics` registered before
+`AddSsfReceiver()` replace the in-memory store, the in-memory acknowledgements and the
+`System.Diagnostics.Metrics` meter.
+
+### Configuration
+
+Every setting of `EasySsf:Receiver`, with its default. The settings of a transmitter, from
+`TransmitterIssuer` to `SetValidation`, repeat under `Transmitters:<name>`. Lists
+(`EventsRequested`, `AcceptedAlgorithms`, `UnderstoodSubjectMembers`, `Scopes`) start empty and
+mean their default while empty, because configuration binding adds to a list rather than replacing
+it.
+
+| Setting | Default | |
+|---|---|---|
+| `Enabled` | `true` | Switches the receiver off entirely when `false`. |
+| `TransmitterIssuer` | | Issuer of the transmitter, must match `iss` of every SET. An `https` URL without query or fragment; `http` only on loopback addresses or with `AllowInsecureHttp`. Required unless transmitters are configured by name. |
+| `TransmitterMetadataUrl` | derived | By default `<host>/.well-known/ssf-configuration<issuer-path>` (SSF 1.0, section 7.2), falling back to `<issuer>/.well-known/ssf-configuration`. |
+| `TransmitterJwksUrl` | from metadata | Skips metadata discovery for the keys when set. |
+| `AllowInsecureHttp` | `false` | Accepts `http` for the transmitter issuer and the endpoints it publishes on any host, with a warning on startup. For development only. |
+| `ExpectedAudience` | | When set, every SET must contain it in `aud`. Without it, the audience of a registered stream; without that, any. |
+| `DeliveryMethod` | `Push` | `Push` or `Poll`. |
+| `UnderstoodSubjectMembers` | `user, session, device, application, tenant, org_unit, group` | The members of a complex subject the application interprets; a SET with a member the transmitter declared critical that is not listed is rejected. |
+| `EventAliases:<alias>` | | Aliases for event type URIs, e.g. `"AcmeLogin": "https://events.acme.example/login"`, usable wherever an event type is named. |
+| `Http:Timeout` | `00:00:05` | Timeout for calls to the transmitter; a long poll waits its hold time plus a margin regardless. |
+| `Http:UserAgent` | | `User-Agent` header for calls to the transmitter. |
+| `TransmitterAccessToken` | | Static access token for stream management and polling. |
+| `OAuth2:TokenUri` | | Token endpoint for the client credentials grant. |
+| `OAuth2:ClientId` / `ClientSecret` | | |
+| `OAuth2:Scopes` | | |
+| `OAuth2:ClientAuthenticationMethod` | `Basic` | `Basic` or `Post`. |
+| `OAuth2:ExpirySafetyWindow` | `00:00:30` | How long before its expiry an access token is renewed, at most a quarter of its lifetime. |
+| `OAuth2:AdditionalParameters:<name>` | | Form parameters sent with the token request in addition to the grant. |
+| `Stream:Management` | `Transmitter` | `Receiver` makes the application create or update its stream on startup. |
+| `Stream:Id` | | Stream created at the transmitter, looked up on startup. |
+| `Stream:EventsRequested` | `CaepSessionRevoked`, `CaepCredentialChange` | For a stream managed by the receiver. |
+| `Stream:Description` | | For a stream managed by the receiver. |
+| `Stream:DeleteOnShutdown` | `false` | For a stream managed by the receiver. |
+| `Poll:EndpointUrl` | from the stream | |
+| `Poll:AutoStartup` | `true` | Otherwise the application polls by calling `SsfPoller.PollNowAsync()`. |
+| `Poll:Interval` | `00:00:30` | |
+| `Poll:InitialDelay` | `00:00:01` | |
+| `Poll:MaxEvents` | `100` | SETs per request. |
+| `Poll:LongPolling` | `false` | Keep one request outstanding that the transmitter holds until SETs are available, instead of polling every `Interval`. |
+| `Poll:LongPollingHold` | `00:00:30` | How long the transmitter holds a long poll request, agreed with it; the request waits that long plus a margin. |
+| `Poll:RateLimit:FallbackBackoff` | | Pause after a `429` without `Retry-After`; unset, the next poll comes at the regular interval. |
+| `Poll:RateLimit:MaxBackoff` | `00:05:00` | Longest pause a `Retry-After` header or the fallback can cause. |
+| `Metrics:Enabled` | `true` | Record `easyssf.receiver.*` meters with `System.Diagnostics.Metrics`. |
+| `SetValidation:AcceptedAlgorithms` | `RS256` | JWS algorithms accepted for SETs. |
+| `SetValidation:MinRsaKeySize` | `2048` | `0` disables the check. |
+| `SetValidation:RequireTypeHeader` | `true` | Requires `typ: secevent+jwt`. |
+| `SetValidation:SubjectCompatibility` | `Strict` | Requires the top-level `sub_id` claim of SSF 1.0. `Legacy` accepts SETs of transmitters following earlier drafts, which put the subject into the event. |
+| `SetValidation:ClockSkew` | `00:01:00` | Tolerance for `iat` in the future. |
+| `Push:EndpointPath` | `/ssf/push` | Where `MapSsfPush()` maps the endpoint; a pattern given to `MapSsfPush` wins. |
+| `Push:ExpectedAuthHeader` | | Exact `Authorization` header value the transmitter must send. |
+| `Push:DeliveryEndpointUrl` | | How the transmitter reaches the push endpoint, for a stream managed by the receiver. |
+| `Dedup:Enabled` | `true` | |
+| `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |
+| `Dedup:Lease` | `00:01:00` | How long a SET counts as being handled by the instance that claimed it; longer than the longest handler. |
+
+### Health
+
+`services.AddHealthChecks().AddSsfReceiver()` adds the check `easyssf`. It reports from what the
+receiver already knows and never calls the transmitter: `Healthy` once the transmitter was reached
+(its metadata retrieved for push, the last poll succeeded for poll) and its stream, if looked up or
+managed, is registered; `Unhealthy` when the last poll failed or the stream cannot be used;
+`Degraded` while there was no contact yet, which is how the application starts. The data of the
+result lists transmitter, delivery, metadata, stream, registration state, last polls and pending
+acknowledgements, under the transmitter's name when there are several.
+
+### Metrics
+
+The meter `EasySsf.Receiver` records, under the names of the Java library:
+
+| Instrument | Type | Tags |
+|---|---|---|
+| `easyssf.receiver.sets` | counter | `transmitter` (the name of the transmitter, `default` for the one at `EasySsf:Receiver`), `delivery` (`push`, `poll`), `outcome` (`handled`, `duplicate`, `invalid`, `unauthenticated`, `unavailable`, `failed`, `in_progress`) |
+| `easyssf.receiver.events` | counter | `transmitter`, `delivery`, `event` (for example `CaepSessionRevoked`) |
+| `easyssf.receiver.poll` | histogram, seconds | `transmitter`, `outcome` (`success`, `failure`) |
+| `easyssf.receiver.poll.pending-acks` | gauge | `transmitter`; acknowledgements and error reports waiting for the next poll request |
 
 ## Verifying a SET
 
@@ -215,8 +372,8 @@ For push delivery, register with `SsfStreamConfiguration.Push(endpointUrl, autho
 events, description)` and leave the poller out; `transmitter.PushAuthorizationHeader` is what
 the `SsfPushHandler` then expects. Several transmitters go into an `SsfTransmitters`, whose
 `Verifier` routes SETs by issuer and whose `PushAuthorizationHeader` looks the header up per
-transmitter. The hosting and ASP.NET Core packages that do this wiring from configuration are the
-next slice.
+transmitter. `SsfTransmitterFactory` in the hosting package builds all of this from an
+`SsfTransmitterOptions`, which is what `AddSsfReceiver()` does for every configured transmitter.
 
 ## Typed handlers
 
