@@ -275,7 +275,7 @@ it.
 | `TransmitterMetadataUrl` | derived | By default `<host>/.well-known/ssf-configuration<issuer-path>` (SSF 1.0, section 7.2), falling back to `<issuer>/.well-known/ssf-configuration`. |
 | `TransmitterJwksUrl` | from metadata | Skips metadata discovery for the keys when set. |
 | `AllowInsecureHttp` | `false` | Accepts `http` for the transmitter issuer and the endpoints it publishes on any host, with a warning on startup. For development only. |
-| `ExpectedAudience` | | When set, every SET must contain it in `aud`. Without it, the audience of a registered stream; without that, any. |
+| `ExpectedAudience` | | Every SET must contain it in `aud`. Without it, the audience of the stream the receiver registers or looks up, and SETs that arrive before the stream is known are left for redelivery (503). Without either the receiver refuses to start, unless `SetValidation:AllowAnyAudience` is set. |
 | `DeliveryMethod` | `Push` | `Push` or `Poll`. |
 | `UnderstoodSubjectMembers` | `user, session, device, application, tenant, org_unit, group` | The members of a complex subject the application interprets; a SET with a member the transmitter declared critical that is not listed is rejected. |
 | `EventAliases:<alias>` | | Aliases for event type URIs, e.g. `"AcmeLogin": "https://events.acme.example/login"`, usable wherever an event type is named. |
@@ -310,6 +310,7 @@ it.
 | `SetValidation:ClockSkew` | `00:01:00` | Tolerance for `iat` in the future. |
 | `Push:EndpointPath` | `/ssf/push` | Where `MapSsfPush()` maps the endpoint; a pattern given to `MapSsfPush` wins. |
 | `Push:ExpectedAuthHeader` | | Exact `Authorization` header value the transmitter must send. |
+| `SetValidation:AllowAnyAudience` | `false` | Accepts SETs with any `aud` when no audience is configured or known from a stream. For a transmitter that sends no `aud` only; with it the receiver also accepts SETs the transmitter issued for other receivers. |
 | `Push:DeliveryEndpointUrl` | | How the transmitter reaches the push endpoint, for a stream managed by the receiver. |
 | `Dedup:Enabled` | `true` | |
 | `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |

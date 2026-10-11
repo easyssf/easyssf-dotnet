@@ -23,6 +23,38 @@ public class SsfReceiverOptionsValidatorTests
     }
 
     [Fact]
+    public void AudienceMustBeKnownUnlessAnyIsAllowed()
+    {
+        // neither an expected audience nor a stream the receiver looks up: the receiver would accept
+        // SETs the transmitter issued for other receivers
+        AssertFails(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.ExpectedAudience = null;
+        }, "EasySsf:Receiver:ExpectedAudience", "Stream:Management=Receiver", "SetValidation:AllowAnyAudience=true");
+        Assert.True(Validate(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.ExpectedAudience = null;
+            options.SetValidation.AllowAnyAudience = true;
+        }).Succeeded);
+        // a stream that is looked up tells the audience
+        Assert.True(Validate(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.ExpectedAudience = null;
+            options.Stream.Id = "stream-1";
+        }).Succeeded);
+        Assert.True(Validate(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.ExpectedAudience = null;
+            options.Stream.Management = SsfStreamManagement.Receiver;
+            options.Push.DeliveryEndpointUrl = new Uri("https://app.example/ssf/push");
+        }).Succeeded);
+    }
+
+    [Fact]
     public void FailsWithoutTransmitterIssuer()
     {
         AssertFails(_ => { }, "EasySsf:Receiver:TransmitterIssuer", "Enabled=false");
@@ -162,7 +194,8 @@ public class SsfReceiverOptionsValidatorTests
 
     private ValidateOptionsResult Validate(Action<SsfReceiverOptions> configure)
     {
-        SsfReceiverOptions options = new();
+        // the audience is required unless a stream tells it, see AudienceMustBeKnownUnlessAnyIsAllowed
+        SsfReceiverOptions options = new() { ExpectedAudience = "https://app.example" };
         configure(options);
         return _validator.Validate(Options.DefaultName, options);
     }

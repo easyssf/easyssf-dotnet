@@ -74,7 +74,9 @@ public sealed class SsfReceiverServiceCollectionExtensionsTests : IDisposable
         services.AddReceiver(new Dictionary<string, string?>
         {
             ["EasySsf:Receiver:Transmitters:a:TransmitterIssuer"] = _keycloak.Issuer,
+            ["EasySsf:Receiver:Transmitters:a:ExpectedAudience"] = TestTransmitter.Audience,
             ["EasySsf:Receiver:Transmitters:b:TransmitterIssuer"] = _okta.Issuer,
+            ["EasySsf:Receiver:Transmitters:b:ExpectedAudience"] = TestTransmitter.Audience,
             ["EasySsf:Receiver:Transmitters:b:DeliveryMethod"] = "Poll",
             ["EasySsf:Receiver:Transmitters:b:Poll:EndpointUrl"] = _okta.PollUri,
             ["EasySsf:Receiver:Transmitters:b:Poll:AutoStartup"] = "false",
@@ -92,7 +94,8 @@ public sealed class SsfReceiverServiceCollectionExtensionsTests : IDisposable
     public void TransmitterCustomizersApplyToEveryTransmitter()
     {
         ServiceCollection services = new();
-        services.AddReceiver(ReceiverServices.Settings(_keycloak, ("EasySsf:Receiver:Transmitters:b:TransmitterIssuer", _okta.Issuer)), _keycloak, _okta)
+        services.AddReceiver(ReceiverServices.Settings(_keycloak, ("EasySsf:Receiver:Transmitters:b:TransmitterIssuer", _okta.Issuer),
+            ("EasySsf:Receiver:Transmitters:b:ExpectedAudience", TestTransmitter.Audience)), _keycloak, _okta)
             .AddTransmitterCustomizer(builder => builder.PushAuthorizationHeader = "Bearer " + builder.Name);
         using ServiceProvider provider = services.BuildServiceProvider();
         SsfTransmitters transmitters = provider.GetRequiredService<SsfTransmitters>();

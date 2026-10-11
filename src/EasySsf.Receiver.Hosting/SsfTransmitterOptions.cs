@@ -318,6 +318,15 @@ public sealed class SsfSetValidationOptions
     /// Tolerated clock skew when checking that a SET was not issued in the future.
     /// </summary>
     public TimeSpan ClockSkew { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Accepts SETs whatever audience they carry when neither <c>ExpectedAudience</c> is set nor a
+    /// stream is registered or looked up (<c>Stream:Management</c>, <c>Stream:Id</c>) that tells the
+    /// audience. Off by default: a receiver without a known audience fails to start, because it
+    /// would accept SETs the transmitter issued for other receivers. Only for a transmitter that
+    /// sends no <c>aud</c>.
+    /// </summary>
+    public bool AllowAnyAudience { get; set; }
 }
 
 /// <summary>

@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using EasySsf.Core;
 using EasySsf.Core.Event;
 using EasySsf.Receiver.Event;
-using EasySsf.Receiver.Hosting;
+using EasySsf.Receiver.Push;
 using EasySsf.Receiver.Stream;
 using EasySsf.Receiver.Transmitter;
 using EasySsf.Testing;
@@ -29,6 +29,57 @@ public sealed class SsfReceiverHostedServiceTests : IDisposable
     public void Dispose()
     {
         _transmitter.Dispose();
+    }
+
+    [Fact]
+    public async Task PushedSetsAreNotVerifiedBeforeTheStreamIsRegistered()
+    {
+        // the receiver learns the audience from the stream; a SET that arrives before the stream is
+        // known cannot be checked and is left to the transmitter's redelivery (503), not accepted
+        ServiceCollection services = new();
+        services.AddReceiver(new Dictionary<string, string?>
+        {
+            ["EasySsf:Receiver:TransmitterIssuer"] = _transmitter.Issuer,
+            ["EasySsf:Receiver:Stream:Management"] = "Receiver",
+            ["EasySsf:Receiver:Push:DeliveryEndpointUrl"] = "https://app.example/ssf/push",
+            ["EasySsf:Receiver:Push:ExpectedAuthHeader"] = "Bearer push-secret",
+            ["EasySsf:Receiver:OAuth2:TokenUri"] = _transmitter.TokenUri,
+            ["EasySsf:Receiver:OAuth2:ClientId"] = TestTransmitter.ClientId,
+            ["EasySsf:Receiver:OAuth2:ClientSecret"] = TestTransmitter.ClientSecret,
+        }, _transmitter).AddEventHandler(SsfEventHandler.Of((context, _) =>
+        {
+            _handled.Add(context.EventToken.Jti);
+            return Task.CompletedTask;
+        }));
+        using ServiceProvider provider = services.BuildServiceProvider();
+        SsfPushHandler pushHandler = provider.GetRequiredService<SsfPushHandler>();
+        _transmitter.Available = false;
+        IHostedService hosted = Assert.Single(provider.GetServices<IHostedService>());
+        await hosted.StartAsync(CancellationToken.None);
+        try
+        {
+            string set = _transmitter.Set("CaepSessionRevoked", SsfSubjectIdentifiers.Opaque("session-1"));
+            SsfPushResponse refused = await pushHandler.HandleAsync("Bearer push-secret", System.Text.Encoding.ASCII.GetBytes(set));
+            Assert.Equal(503, refused.Status);
+            Assert.Empty(_handled);
+
+            // the stream is registered: SETs with its audience are handled, others rejected
+            _transmitter.Available = true;
+            SsfReceiverStream receiverStream = provider.GetRequiredService<SsfTransmitters>().Primary!.ReceiverStream;
+            await Eventually.UntilAsync(() => receiverStream.StreamId is not null);
+            SsfPushResponse rejected = await pushHandler.HandleAsync("Bearer push-secret", System.Text.Encoding.ASCII.GetBytes(set));
+            Assert.Equal(400, rejected.Status);
+            Assert.Contains("invalid_audience", rejected.Body);
+            JsonObject claims = _transmitter.SetClaims("CaepSessionRevoked", SsfSubjectIdentifiers.Opaque("session-1"));
+            claims["aud"] = _transmitter.Streams[0]["aud"]!.DeepClone();
+            SsfPushResponse accepted = await pushHandler.HandleAsync("Bearer push-secret", System.Text.Encoding.ASCII.GetBytes(_transmitter.SignSet(claims)));
+            Assert.Equal(202, accepted.Status);
+            Assert.Equal([claims["jti"]!.GetValue<string>()], _handled);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]

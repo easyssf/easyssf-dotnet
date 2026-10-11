@@ -79,7 +79,9 @@ public static class SsfTransmitterFactory
 
     /// <summary>
     /// The verifier of the transmitter. The audience is the configured one; without one, the
-    /// audience of the stream once it is registered; without a registered stream, any.
+    /// audience of the stream once it is registered, and SETs are left unverified
+    /// (<see cref="SsfTransmitterUnavailableException"/>) until it is; without a registered stream,
+    /// any, which the validation allows only with <c>SetValidation:AllowAnyAudience</c>.
     /// </summary>
     /// <exception cref="SsfReceiverConfigurationException">if an algorithm or the JWK Set URL is not acceptable</exception>
     public static JwtSsfSetVerifier Verifier(string name, SsfTransmitterOptions options, HttpClient httpClient,
@@ -106,11 +108,28 @@ public static class SsfTransmitterFactory
         }
         else if (RegistersStream(options))
         {
-            // the transmitter tells the audience of the stream
-            verifierOptions.ExpectedAudiencesProvider = () => receiverStream.Audience;
+            // the transmitter tells the audience of the stream; until the stream is known a SET
+            // cannot be checked, so it is left to the redelivery instead of being accepted blindly
+            bool anyAudience = options.SetValidation.AllowAnyAudience;
+            string transmitter = Describe(name, options.TransmitterIssuer ?? "");
+            verifierOptions.ExpectedAudiencesProvider = () =>
+            {
+                if (receiverStream.Configuration is null)
+                {
+                    throw new SsfTransmitterUnavailableException("The stream at " + transmitter + " is not registered yet, so the audience of SETs cannot be checked");
+                }
+                IReadOnlyList<string> audience = receiverStream.Audience;
+                if (audience.Count == 0 && !anyAudience)
+                {
+                    throw new SsfSetVerificationException(SsfSetVerificationException.InvalidAudience,
+                        "The stream at " + transmitter + " has no audience (aud), set " + Prefix(name) + "ExpectedAudience or SetValidation:AllowAnyAudience");
+                }
+                return audience;
+            };
         }
         else
         {
+            // allowed by the validation only with SetValidation:AllowAnyAudience
             (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger(typeof(SsfTransmitterFactory)).LogWarning(
                 "{Prefix}ExpectedAudience is not set, SETs that the transmitter {Transmitter} issued for other receivers are accepted as well",
                 Prefix(name), Describe(name, options.TransmitterIssuer ?? ""));
@@ -326,6 +345,12 @@ public static class SsfTransmitterFactory
             {
                 failures.Add(prefix + "SetValidation:AcceptedAlgorithms: Not an asymmetric signature algorithm: " + algorithm);
             }
+        }
+        if (string.IsNullOrWhiteSpace(options.ExpectedAudience) && !RegistersStream(options) && !options.SetValidation.AllowAnyAudience)
+        {
+            failures.Add($"{prefix}ExpectedAudience: The audience of the SETs must be known: set {prefix}ExpectedAudience, or let the receiver look the"
+                + $" stream up ({prefix}Stream:Management=Receiver or {prefix}Stream:Id), or set {prefix}SetValidation:AllowAnyAudience=true to accept"
+                + " SETs the transmitter issued for other receivers as well");
         }
         if (string.IsNullOrWhiteSpace(options.TransmitterAccessToken) && options.OAuth2.TokenUri is not null
                 && (string.IsNullOrWhiteSpace(options.OAuth2.ClientId) || string.IsNullOrWhiteSpace(options.OAuth2.ClientSecret)))

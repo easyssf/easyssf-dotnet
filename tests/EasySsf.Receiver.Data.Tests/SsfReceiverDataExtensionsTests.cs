@@ -134,7 +134,7 @@ public sealed class SsfReceiverDataExtensionsTests : IClassFixture<TestTransmitt
     [Fact]
     public void InvalidDataOptionsAreReported()
     {
-        SsfReceiverOptions options = new() { TransmitterIssuer = _transmitter.Issuer };
+        SsfReceiverOptions options = new() { TransmitterIssuer = _transmitter.Issuer, ExpectedAudience = TestTransmitter.Audience };
         options.Data.TablePrefix = "X; DROP";
         options.Data.AckDeleteBatchSize = 0;
         SsfReceiverConfigurationException ex = Assert.Throws<SsfReceiverConfigurationException>(() => SsfReceiverOptionsValidator.ThrowIfInvalid(options));

@@ -113,6 +113,7 @@ public sealed class PushEndpointPathTests : IDisposable
         await using ReceiverApp app = await ReceiverApp.StartAsync(new Dictionary<string, string?>
         {
             ["EasySsf:Receiver:TransmitterIssuer"] = _transmitter.Issuer,
+            ["EasySsf:Receiver:ExpectedAudience"] = TestTransmitter.Audience,
             ["EasySsf:Receiver:Push:EndpointPath"] = "/events",
         }, transmitters: _transmitter);
         using HttpResponseMessage accepted = await app.PushAsync(_transmitter.Set("CaepSessionRevoked", Opaque("s")), path: "/events");
@@ -127,6 +128,7 @@ public sealed class PushEndpointPathTests : IDisposable
         await using ReceiverApp app = await ReceiverApp.StartAsync(new Dictionary<string, string?>
         {
             ["EasySsf:Receiver:TransmitterIssuer"] = _transmitter.Issuer,
+            ["EasySsf:Receiver:ExpectedAudience"] = TestTransmitter.Audience,
         }, map: web => web.MapSsfPush("/ssf/inbox"), transmitters: _transmitter);
         using HttpResponseMessage accepted = await app.PushAsync(_transmitter.Set("CaepSessionRevoked", Opaque("s")), path: "/ssf/inbox");
         Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
