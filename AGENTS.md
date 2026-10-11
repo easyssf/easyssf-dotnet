@@ -25,9 +25,9 @@ order:
 
 | Project | Holds | Depends on |
 |---|---|---|
-| `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, as immutable records over `JsonElement` | BCL only |
-| `src/EasySsf.Testing` | `TestTransmitter`, an in-process transmitter that signs SETs and serves its JWK Set through an `HttpMessageHandler` | Core |
-| `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push, handlers (generic and per event family) and metrics; later poll, stream management, revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `JsonElement` | BCL only |
+| `src/EasySsf.Testing` | `TestTransmitter`, an in-process transmitter that signs SETs, serves its JWK Set and metadata, issues tokens and emulates stream management and polling through an `HttpMessageHandler` | Core |
+| `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push and poll, stream management, transmitter assembly, handlers (generic and per event family) and metrics; later revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `tests/EasySsf.Core.Tests`, `tests/EasySsf.Receiver.Tests` | xUnit tests, ported from the Java modules | the project under test, Testing |
 
 Planned, in this order: `EasySsf.Receiver.Hosting` (options, DI, background services, health),
@@ -65,6 +65,10 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - The tests need no network and no Docker: `TestTransmitter` answers in-process. Tests that will
   need Docker (ADO.NET stores, the conformance harness) are to be kept behind a trait so that the
   normal `dotnet test` stays self-contained.
+- **Background work is `Task`-based.** Poller and registrar run on `Task.Run` with a
+  `CancellationTokenSource`; `Start()` is synchronous, `StopAsync()` cancels and awaits. Tests of
+  background behaviour use `Eventually.UntilAsync` / `DuringAsync` (the Awaitility of this repo)
+  and keep waits short. A `TimeProvider` paces delays where a test needs to control time.
 - Formatting follows `.editorconfig` (4 spaces, file-scoped namespaces, braces on their own line,
   `System` usings first, usings grouped). Run `dotnet format` rather than formatting by hand.
 

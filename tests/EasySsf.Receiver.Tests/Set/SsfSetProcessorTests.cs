@@ -132,9 +132,9 @@ public class SsfSetProcessorTests
         await Assert.ThrowsAsync<SsfSetVerificationException>(() => processor.ProcessAsync(set));
         Assert.Equal(("https://unverified.example", SsfDeliveryMethod.Push, SsfSetOutcome.Invalid), _metrics.Sets[0]);
 
-        DelegateVerifier unavailable = new(_ => throw new Transmitter.SsfTransmitterUnavailableException("no keys"));
+        DelegateVerifier unavailable = new(_ => throw new EasySsf.Receiver.Transmitter.SsfTransmitterUnavailableException("no keys"));
         processor = new SsfSetProcessor(unavailable, null, [_recordingHandler], Options());
-        await Assert.ThrowsAsync<Transmitter.SsfTransmitterUnavailableException>(() => processor.ProcessAsync("not-a-set"));
+        await Assert.ThrowsAsync<EasySsf.Receiver.Transmitter.SsfTransmitterUnavailableException>(() => processor.ProcessAsync("not-a-set"));
         Assert.Equal((null, SsfDeliveryMethod.Push, SsfSetOutcome.Unavailable), _metrics.Sets[1]);
         Assert.Empty(_handled);
     }
@@ -276,6 +276,8 @@ public sealed class RecordingMetrics : ISsfReceiverMetrics
 
     public List<(string? Transmitter, TimeSpan Duration, bool Success)> Polls { get; } = [];
 
+    public Dictionary<string, Func<int>> PendingAcks { get; } = new(StringComparer.Ordinal);
+
     public void SetReceived(string? transmitter, SsfDeliveryMethod deliveryMethod, SsfSetOutcome outcome)
     {
         Sets.Add((transmitter, deliveryMethod, outcome));
@@ -293,5 +295,6 @@ public sealed class RecordingMetrics : ISsfReceiverMetrics
 
     public void PollerStarted(string? transmitter, Func<int> pendingAcks)
     {
+        PendingAcks[transmitter ?? "unknown"] = pendingAcks;
     }
 }

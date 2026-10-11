@@ -36,9 +36,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metrics, a `TestTransmitter` for the tests of a receiver |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver |
 | Next | Hosting and ASP.NET Core: options, DI, `MapSsfPush`, metrics, health |
-| Then | Polling and stream management (RFC 8936, SSF stream API); token revocation and session termination; ADO.NET stores; the conformance harness |
+| Then | Token revocation and session termination; ADO.NET stores; the conformance harness |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -46,9 +46,9 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 
 | Project | | Depends on |
 |---|---|---|
-| `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
-| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, CAEP, RISC and SCIM handlers and metrics today; polling, stream management, revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
-| `EasySsf.Testing` | Test support: a transmitter that signs SETs and serves its JWK Set and metadata through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
+| `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
+| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, polling, stream management, CAEP, RISC and SCIM handlers and metrics today; revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
 
@@ -75,6 +75,17 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
   application does not interpret, as SSF requires.
 - Records **metrics** with `System.Diagnostics.Metrics` under the Java library's names
   (`easyssf.receiver.sets`, `.events`, `.poll`).
+- **Discovers the transmitter** from its `.well-known/ssf-configuration` (SSF 1.0, section 7), at
+  the location the specification defines and at the one OpenID providers tend to use, and holds
+  the transmitter's issuer and endpoints to `https` unless a loopback address or an explicit
+  insecure policy says otherwise.
+- **Manages its stream** at the transmitter: looks a stream up by identifier, or reuses, updates
+  or creates the stream the receiver wants, in the background with retries, and offers an
+  `SsfStreamClient` for the stream management API (streams, status, subjects, verification).
+- **Polls** the transmitter (RFC 8936) with short or long polling, acknowledges handled SETs and
+  reports invalid ones on the next request, keeps acknowledgements in an `ISsfPollAckStore` until
+  a request carried them, backs off on `Retry-After`, and authenticates with the client
+  credentials grant, renewing the token ahead of its expiry and on a 401.
 - **Typed events**: `SsfCaepEvent` (CAEP 1.0, the common claims of section 2 and the
   event-specific ones of section 3), `SsfRiscEvent` (RISC 1.0) and `SsfScimEvent` with
   `SsfScimSubject` (SCIM Events, RFC 9967), each read from a SET with `In(eventToken)`, and the
@@ -159,6 +170,54 @@ delivers the SET again; the other handlers still run. `SsfEventHandler.Of` handl
 duplicate, and `SsfSetProcessorOptions` takes the metrics, the critical subject members a
 transmitter declares and the stream verification hook.
 
+## Polling and stream management
+
+For a receiver that polls, `SsfTransmitterBuilder` assembles the parts for one transmitter and
+`SsfTransmitter.Start()` runs them in the background: the registrar registers the stream, the
+poller fetches as soon as the stream is known. An `HttpClient` with a long enough timeout serves
+them all.
+
+```csharp
+using EasySsf.Core.Stream;
+using EasySsf.Receiver.Poll;
+using EasySsf.Receiver.Set;
+using EasySsf.Receiver.Stream;
+using EasySsf.Receiver.Transmitter;
+
+HttpClient http = new() { Timeout = TimeSpan.FromMinutes(2) };
+string issuer = "https://idp.example/realms/demo";
+SsfTransmitterMetadataResolver metadata = new(issuer, null, http);
+ClientCredentialsSsfTransmitterTokenProvider tokens = new(http,
+    new Uri("https://idp.example/realms/demo/protocol/openid-connect/token"), clientId, clientSecret);
+SsfReceiverStream receiverStream = new();
+SsfStreamClient streamClient = new(http, tokens, metadata);
+SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(streamClient, receiverStream,
+    SsfStreamConfiguration.Poll(["CaepSessionRevoked", "CaepCredentialChange"], "my-app"));
+
+SsfSetVerifierOptions verifierOptions = new() { ExpectedAudiencesProvider = () => receiverStream.Audience };
+JwtSsfSetVerifier verifier = new(issuer, async ct => (await metadata.ResolveAsync(ct)).JwksUri!, http, verifierOptions);
+SsfSetProcessor processor = new(verifier, new InMemorySsfJtiDedupStore(10_000), [handler],
+    new SsfSetProcessorOptions { CriticalSubjectMembers = _ => metadata.ResolvedMetadata?.CriticalSubjectMembers });
+SsfPoller poller = new(http, tokens, () => receiverStream.Configuration?.DeliveryEndpointUrl, processor,
+    new SsfPollerOptions { Transmitter = issuer, LongPollingHold = TimeSpan.FromSeconds(30) });
+
+SsfTransmitter transmitter = new SsfTransmitterBuilder(SsfTransmitter.DefaultName, issuer)
+{
+    MetadataResolver = metadata, Verifier = verifier, TokenProvider = tokens, StreamClient = streamClient,
+    ReceiverStream = receiverStream, StreamRegistrar = registrar, Poller = poller,
+}.Build();
+transmitter.Start();
+// ... on shutdown:
+await transmitter.StopAsync();
+```
+
+For push delivery, register with `SsfStreamConfiguration.Push(endpointUrl, authorizationHeader,
+events, description)` and leave the poller out; `transmitter.PushAuthorizationHeader` is what
+the `SsfPushHandler` then expects. Several transmitters go into an `SsfTransmitters`, whose
+`Verifier` routes SETs by issuer and whose `PushAuthorizationHeader` looks the header up per
+transmitter. The hosting and ASP.NET Core packages that do this wiring from configuration are the
+next slice.
+
 ## Typed handlers
 
 For CAEP, RISC and SCIM Events, derive from the handler of the family and override the methods for
@@ -232,8 +291,11 @@ The claims are a `JsonObject`, so a test removes or changes what it wants reject
 (`claims.Remove("jti")`). `TestTransmitter.Sign` signs with any key, algorithm and `typ`,
 `TestTransmitter.Unsigned` produces an unsecured JWT, `TestSigningKey.Generate(1024, "weak")`
 a key the receiver has to refuse. The subject helpers are the static methods of
-`SsfSubjectIdentifiers`. The token, stream management and poll endpoints of the Java
-`TestTransmitter` arrive with the polling slice.
+`SsfSubjectIdentifiers`. For a polling receiver, `transmitter.QueueSet(encodedSet)` makes the SET
+available at the poll endpoint, `transmitter.Available = false` simulates an outage,
+`transmitter.AcknowledgedSets` and `transmitter.ReportedErrors` show what the receiver
+acknowledged, `transmitter.Streams` the streams it registered. A test with several transmitters
+gives each its own host with `TestTransmitter.WithMetadata(location, "okta.example")`.
 
 ## Build
 

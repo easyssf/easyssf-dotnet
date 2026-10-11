@@ -13,9 +13,10 @@ namespace EasySsf.Testing;
 
 /// <summary>
 /// A minimal SSF transmitter / identity provider for tests: publishes transmitter metadata and a
-/// JWK Set over an <see cref="HttpMessageHandler"/>, and signs SETs and access tokens. Give the
-/// receiver under test an <see cref="HttpClient"/> from <see cref="CreateHttpClient"/>, no socket
-/// is involved.
+/// JWK Set, signs SETs and access tokens, issues access tokens for the client credentials grant and
+/// offers stream management and a poll endpoint that behave like the ones of Keycloak. Everything
+/// is served through an <see cref="HttpMessageHandler"/>: give the receiver under test an
+/// <see cref="HttpClient"/> from <see cref="CreateHttpClient"/>, no socket is involved.
 /// </summary>
 public sealed class TestTransmitter : IDisposable
 {
@@ -45,7 +46,33 @@ public sealed class TestTransmitter : IDisposable
 
     private readonly TestTransmitterHandler _handler;
 
+    private readonly List<JsonObject> _streams = [];
+
+    private readonly OrderedDictionary<string, string> _queuedSets = new(StringComparer.Ordinal);
+
+    private readonly Lock _queueLock = new();
+
+    private TaskCompletionSource _setQueued = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly List<string> _acknowledgedSets = [];
+
+    private readonly OrderedDictionary<string, JsonNode?> _reportedErrors = new(StringComparer.Ordinal);
+
+    private readonly List<string> _verificationRequests = [];
+
+    private readonly List<JsonObject> _addedSubjects = [];
+
+    private readonly List<JsonObject> _removedSubjects = [];
+
     private int _requests;
+
+    private int _tokenRequests;
+
+    private int _pollRequests;
+
+    private volatile JsonObject _lastPollRequest = new();
+
+    private volatile string _validAccessToken = DefaultAccessToken;
 
     private volatile string? _lastUserAgent;
 
@@ -57,15 +84,20 @@ public sealed class TestTransmitter : IDisposable
     /// <summary>
     /// A transmitter that publishes its metadata at the given location, or not at all.
     /// </summary>
-    public static TestTransmitter WithMetadata(MetadataLocation metadataLocation)
+    /// <param name="metadataLocation">where the metadata is published</param>
+    /// <param name="host">
+    /// the host of the issuer, <c>transmitter.example</c> if <see langword="null"/>; give every
+    /// transmitter of a test its own, as a receiver tells transmitters apart by issuer
+    /// </param>
+    public static TestTransmitter WithMetadata(MetadataLocation metadataLocation, string? host = null)
     {
-        return new TestTransmitter(metadataLocation);
+        return new TestTransmitter(metadataLocation, host);
     }
 
-    private TestTransmitter(MetadataLocation metadataLocation)
+    private TestTransmitter(MetadataLocation metadataLocation, string? host = null)
     {
         Key = TestSigningKey.Generate(2048, "test-key");
-        Issuer = "https://transmitter.example" + Realm;
+        Issuer = "https://" + (host ?? "transmitter.example") + Realm;
         _handler = new TestTransmitterHandler(this);
         PublishJwks(Key);
         PublishMetadata(metadataLocation);
@@ -88,10 +120,23 @@ public sealed class TestTransmitter : IDisposable
     public string PollUri => Issuer + "/poll";
 
     /// <summary>
-    /// Whether the endpoints under the issuer answer; <see langword="false"/> makes them answer
-    /// with 503. Published documents (the JWK Set, the metadata) are served regardless.
+    /// Whether the token, stream management and poll endpoints answer; <see langword="false"/>
+    /// makes them answer with 503. Published documents (the JWK Set, the metadata) are served
+    /// regardless.
     /// </summary>
     public bool Available { get; set; } = true;
+
+    /// <summary>
+    /// Makes the transmitter create streams with the given issuer instead of its own.
+    /// </summary>
+    public string? StreamIssuer { get; set; }
+
+    /// <summary>
+    /// How long a poll request without <c>returnImmediately: true</c> is held while no SET is
+    /// queued. Zero by default: the transmitter then answers at once, as if it did not support long
+    /// polling.
+    /// </summary>
+    public TimeSpan LongPollHold { get; set; } = TimeSpan.Zero;
 
     /// <summary>
     /// The number of HTTP requests received so far.
@@ -99,9 +144,116 @@ public sealed class TestTransmitter : IDisposable
     public int Requests => Volatile.Read(ref _requests);
 
     /// <summary>
+    /// The number of token requests answered with a token.
+    /// </summary>
+    public int TokenRequests => Volatile.Read(ref _tokenRequests);
+
+    /// <summary>
+    /// The number of poll requests received.
+    /// </summary>
+    public int PollRequests => Volatile.Read(ref _pollRequests);
+
+    /// <summary>
+    /// The body of the last poll request, empty if none was received.
+    /// </summary>
+    public JsonObject LastPollRequest => _lastPollRequest;
+
+    /// <summary>
     /// The <c>User-Agent</c> header of the most recent request.
     /// </summary>
     public string? LastUserAgent => _lastUserAgent;
+
+    /// <summary>
+    /// The streams registered at the transmitter, a snapshot.
+    /// </summary>
+    public IReadOnlyList<JsonObject> Streams
+    {
+        get
+        {
+            lock (_streams)
+            {
+                return _streams.Select(stream => (JsonObject)stream.DeepClone()).ToList().AsReadOnly();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The <c>jti</c>s of the SETs a polling receiver acknowledged, a snapshot.
+    /// </summary>
+    public IReadOnlyList<string> AcknowledgedSets
+    {
+        get
+        {
+            lock (_queueLock)
+            {
+                return _acknowledgedSets.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The errors a polling receiver reported, by <c>jti</c>, a snapshot.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonNode?> ReportedErrors
+    {
+        get
+        {
+            lock (_queueLock)
+            {
+                return new Dictionary<string, JsonNode?>(_reportedErrors, StringComparer.Ordinal);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The <c>state</c>s of the verification requests received, a snapshot.
+    /// </summary>
+    public IReadOnlyList<string> VerificationRequests
+    {
+        get
+        {
+            lock (_verificationRequests)
+            {
+                return _verificationRequests.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    public IReadOnlyList<JsonObject> AddedSubjects
+    {
+        get
+        {
+            lock (_addedSubjects)
+            {
+                return _addedSubjects.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    public IReadOnlyList<JsonObject> RemovedSubjects
+    {
+        get
+        {
+            lock (_removedSubjects)
+            {
+                return _removedSubjects.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The number of SETs queued and not yet acknowledged.
+    /// </summary>
+    public int QueuedSetCount
+    {
+        get
+        {
+            lock (_queueLock)
+            {
+                return _queuedSets.Count;
+            }
+        }
+    }
 
     /// <summary>
     /// Serves the transmitter's documents and endpoints to an <see cref="HttpClient"/>.
@@ -113,7 +265,72 @@ public sealed class TestTransmitter : IDisposable
     /// </summary>
     public HttpClient CreateHttpClient()
     {
-        return new HttpClient(_handler, disposeHandler: false);
+        return new HttpClient(_handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
+    }
+
+    /// <summary>
+    /// Makes the access tokens issued so far invalid: requests with them are answered with 401 and
+    /// the token endpoint issues another token.
+    /// </summary>
+    public void ExpireAccessTokens()
+    {
+        _validAccessToken = DefaultAccessToken + "-" + Guid.NewGuid();
+    }
+
+    /// <summary>
+    /// Makes the given SET available at the poll endpoint.
+    /// </summary>
+    public void QueueSet(string set)
+    {
+        QueueSet(Claims(set)["jti"]!.GetValue<string>(), set);
+    }
+
+    public void QueueSet(string jti, string set)
+    {
+        lock (_queueLock)
+        {
+            _queuedSets[jti] = set;
+            // wakes up held poll requests
+            _setQueued.TrySetResult();
+            _setQueued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    /// <summary>
+    /// Forgets streams, queued SETs and what the receiver reported.
+    /// </summary>
+    public void Reset()
+    {
+        lock (_streams)
+        {
+            _streams.Clear();
+        }
+        lock (_queueLock)
+        {
+            _queuedSets.Clear();
+            _acknowledgedSets.Clear();
+            _reportedErrors.Clear();
+            _setQueued.TrySetResult();
+            _setQueued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        lock (_verificationRequests)
+        {
+            _verificationRequests.Clear();
+        }
+        lock (_addedSubjects)
+        {
+            _addedSubjects.Clear();
+        }
+        lock (_removedSubjects)
+        {
+            _removedSubjects.Clear();
+        }
+        Volatile.Write(ref _pollRequests, 0);
+        _lastPollRequest = new JsonObject();
+        LongPollHold = TimeSpan.Zero;
+        Available = true;
+        _validAccessToken = DefaultAccessToken;
+        StreamIssuer = null;
     }
 
     /// <summary>
@@ -187,6 +404,36 @@ public sealed class TestTransmitter : IDisposable
         /// No metadata is published.
         /// </summary>
         None,
+    }
+
+    /// <summary>
+    /// Registers a stream the way the transmitter does for a create request: assigns the identifier,
+    /// the audience and, for POLL delivery, the poll endpoint.
+    /// </summary>
+    public JsonObject AddStream(JsonObject request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        JsonObject stream = (JsonObject)request.DeepClone();
+        if (stream["stream_id"] is not JsonValue)
+        {
+            stream["stream_id"] = Guid.NewGuid().ToString();
+        }
+        string streamId = stream["stream_id"]!.GetValue<string>();
+        stream["iss"] = StreamIssuer ?? Issuer;
+        stream["aud"] = new JsonArray(ClientId + "/" + streamId);
+        stream["events_delivered"] = stream["events_requested"]?.DeepClone() ?? new JsonArray();
+        JsonObject delivery = (stream["delivery"] as JsonObject)?.DeepClone() as JsonObject ?? new JsonObject();
+        delivery.Remove("authorization_header");
+        if (delivery["method"]?.GetValue<string>() == "urn:ietf:rfc:8936")
+        {
+            delivery["endpoint_url"] = PollUri;
+        }
+        stream["delivery"] = delivery;
+        lock (_streams)
+        {
+            _streams.Add(stream);
+        }
+        return (JsonObject)stream.DeepClone();
     }
 
     /// <summary>
@@ -326,7 +573,7 @@ public sealed class TestTransmitter : IDisposable
         return Base64Url.EncodeToString(Encoding.UTF8.GetBytes(json.ToJsonString(JsonOptions)));
     }
 
-    private HttpResponseMessage Handle(HttpRequestMessage request)
+    private async Task<HttpResponseMessage> HandleAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _requests);
         _lastUserAgent = request.Headers.UserAgent.ToString();
@@ -343,9 +590,229 @@ public sealed class TestTransmitter : IDisposable
         {
             return Respond(HttpStatusCode.ServiceUnavailable, null);
         }
-        // the token, stream management and poll endpoints follow with the poll and stream
-        // management slice of the port
-        return Respond(HttpStatusCode.NotFound, null);
+        string endpoint = path[(Realm.Length + 1)..];
+        string body = (request.Content is not null) ? await request.Content.ReadAsStringAsync(cancellationToken) : "";
+        if (endpoint == "token")
+        {
+            return HandleToken(request, body);
+        }
+        AuthenticationHeaderValue? authorization = request.Headers.Authorization;
+        if (authorization is null || authorization.Scheme != "Bearer" || authorization.Parameter != _validAccessToken)
+        {
+            return Respond(HttpStatusCode.Unauthorized, null);
+        }
+        JsonObject requestBody = (string.IsNullOrWhiteSpace(body) ? null : JsonNode.Parse(body) as JsonObject) ?? new JsonObject();
+        string? streamId = QueryParameter(request.RequestUri, "stream_id") ?? requestBody["stream_id"]?.GetValue<string>();
+        switch (endpoint)
+        {
+            case "streams":
+                return HandleStreams(request.Method, streamId, requestBody);
+            case "streams/status":
+                return Respond((FindStream(streamId) is not null) ? HttpStatusCode.OK : HttpStatusCode.NotFound,
+                    new JsonObject
+                    {
+                        ["stream_id"] = streamId ?? "null",
+                        ["status"] = requestBody["status"]?.GetValue<string>() ?? "enabled",
+                    }.ToJsonString(JsonOptions));
+            case "verify":
+                lock (_verificationRequests)
+                {
+                    _verificationRequests.Add(requestBody["state"]?.ToJsonString().Trim('"') ?? "null");
+                }
+                return Respond(HttpStatusCode.NoContent, null);
+            case "poll":
+                return Respond(HttpStatusCode.OK, (await PollAsync(requestBody, cancellationToken)).ToJsonString(JsonOptions));
+            case "subjects/add":
+                lock (_addedSubjects)
+                {
+                    _addedSubjects.Add(Subject(requestBody));
+                }
+                return Respond(HttpStatusCode.OK, null);
+            case "subjects/remove":
+                lock (_removedSubjects)
+                {
+                    _removedSubjects.Add(Subject(requestBody));
+                }
+                return Respond(HttpStatusCode.NoContent, null);
+            default:
+                return Respond(HttpStatusCode.NotFound, null);
+        }
+    }
+
+    private HttpResponseMessage HandleToken(HttpRequestMessage request, string form)
+    {
+        string credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes(ClientId + ":" + ClientSecret));
+        AuthenticationHeaderValue? authorization = request.Headers.Authorization;
+        bool basic = authorization is { Scheme: "Basic" } && authorization.Parameter == credentials;
+        bool authenticated = basic || (form.Contains("client_id=" + ClientId, StringComparison.Ordinal)
+            && form.Contains("client_secret=" + ClientSecret, StringComparison.Ordinal));
+        if (!authenticated || !form.Contains("grant_type=client_credentials", StringComparison.Ordinal))
+        {
+            return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["error"] = "invalid_client" }.ToJsonString(JsonOptions));
+        }
+        Interlocked.Increment(ref _tokenRequests);
+        return Respond(HttpStatusCode.OK, new JsonObject
+        {
+            ["access_token"] = _validAccessToken,
+            ["token_type"] = "Bearer",
+            ["expires_in"] = 300,
+        }.ToJsonString(JsonOptions));
+    }
+
+    private HttpResponseMessage HandleStreams(HttpMethod method, string? streamId, JsonObject request)
+    {
+        lock (_streams)
+        {
+            JsonObject? stream = FindStreamLocked(streamId);
+            if (method == HttpMethod.Get)
+            {
+                if (streamId is null)
+                {
+                    JsonArray all = [];
+                    foreach (JsonObject existing in _streams)
+                    {
+                        all.Add(existing.DeepClone());
+                    }
+                    return Respond(HttpStatusCode.OK, all.ToJsonString(JsonOptions));
+                }
+                return Respond((stream is not null) ? HttpStatusCode.OK : HttpStatusCode.NotFound, stream?.ToJsonString(JsonOptions));
+            }
+            if (method == HttpMethod.Post)
+            {
+                if (_streams.Count > 0)
+                {
+                    return Respond(HttpStatusCode.Conflict, new JsonObject
+                    {
+                        ["error"] = "stream_error",
+                        ["error_description"] = "Only one stream per receiver is allowed",
+                    }.ToJsonString(JsonOptions));
+                }
+                return Respond(HttpStatusCode.Created, AddStream(request).ToJsonString(JsonOptions));
+            }
+            if (method == HttpMethod.Patch || method == HttpMethod.Put)
+            {
+                if (stream is null)
+                {
+                    return Respond(HttpStatusCode.NotFound, null);
+                }
+                JsonObject updated = (JsonObject)stream.DeepClone();
+                foreach ((string name, JsonNode? value) in request)
+                {
+                    updated[name] = value?.DeepClone();
+                }
+                _streams.Remove(stream);
+                return Respond(HttpStatusCode.OK, AddStream(updated).ToJsonString(JsonOptions));
+            }
+            if (method == HttpMethod.Delete)
+            {
+                if (stream is null)
+                {
+                    return Respond(HttpStatusCode.NotFound, null);
+                }
+                _streams.Remove(stream);
+                return Respond(HttpStatusCode.NoContent, null);
+            }
+            return Respond(HttpStatusCode.MethodNotAllowed, null);
+        }
+    }
+
+    private async Task<JsonObject> PollAsync(JsonObject request, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _pollRequests);
+        _lastPollRequest = (JsonObject)request.DeepClone();
+        int maxEvents = request["maxEvents"]?.GetValue<int>() ?? 10;
+        bool returnImmediately = request["returnImmediately"]?.GetValue<bool>() ?? false;
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + LongPollHold;
+        lock (_queueLock)
+        {
+            if (request["ack"] is JsonArray acks)
+            {
+                foreach (JsonNode? ack in acks)
+                {
+                    string jti = ack!.GetValue<string>();
+                    if (_queuedSets.Remove(jti))
+                    {
+                        _acknowledgedSets.Add(jti);
+                    }
+                }
+            }
+            if (request["setErrs"] is JsonObject errors)
+            {
+                foreach ((string jti, JsonNode? error) in errors)
+                {
+                    _queuedSets.Remove(jti);
+                    _reportedErrors[jti] = error?.DeepClone();
+                }
+            }
+        }
+        // a long poll (returnImmediately false or absent, RFC 8936 section 2.5) is held until a
+        // SET is queued or the hold time elapses
+        if (!returnImmediately && maxEvents > 0)
+        {
+            while (true)
+            {
+                Task queued;
+                lock (_queueLock)
+                {
+                    if (_queuedSets.Count > 0)
+                    {
+                        break;
+                    }
+                    queued = _setQueued.Task;
+                }
+                TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+                await Task.WhenAny(queued, Task.Delay(remaining, cancellationToken));
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+        lock (_queueLock)
+        {
+            JsonObject sets = [];
+            foreach ((string jti, string set) in _queuedSets.Take(maxEvents))
+            {
+                sets[jti] = set;
+            }
+            return new JsonObject { ["sets"] = sets, ["moreAvailable"] = _queuedSets.Count > sets.Count };
+        }
+    }
+
+    private static JsonObject Subject(JsonObject request)
+    {
+        return (request["subject"] as JsonObject)?.DeepClone() as JsonObject ?? new JsonObject();
+    }
+
+    private JsonObject? FindStream(string? streamId)
+    {
+        lock (_streams)
+        {
+            return FindStreamLocked(streamId);
+        }
+    }
+
+    private JsonObject? FindStreamLocked(string? streamId)
+    {
+        return (streamId is null) ? null : _streams.FirstOrDefault(stream => stream["stream_id"]?.GetValue<string>() == streamId);
+    }
+
+    private static string? QueryParameter(Uri? uri, string name)
+    {
+        if (uri is null || string.IsNullOrEmpty(uri.Query))
+        {
+            return null;
+        }
+        foreach (string parameter in uri.Query.TrimStart('?').Split('&'))
+        {
+            int separator = parameter.IndexOf('=');
+            if (separator > 0 && Uri.UnescapeDataString(parameter[..separator]) == name)
+            {
+                return Uri.UnescapeDataString(parameter[(separator + 1)..]);
+            }
+        }
+        return null;
     }
 
     private static HttpResponseMessage Respond(HttpStatusCode status, string? json)
@@ -366,17 +833,21 @@ public sealed class TestTransmitter : IDisposable
 
     private sealed class TestTransmitterHandler(TestTransmitter transmitter) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
-                CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(transmitter.Handle(request));
-        }
-
-        protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return transmitter.Handle(request);
+            try
+            {
+                return await transmitter.HandleAsync(request, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return Respond(HttpStatusCode.InternalServerError, new JsonObject { ["error"] = ex.ToString() }.ToJsonString(JsonOptions));
+            }
         }
     }
 }
