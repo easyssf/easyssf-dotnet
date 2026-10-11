@@ -12,7 +12,8 @@ integration to follow. A receiver verifies Security Event Tokens (SETs, RFC 8417
 pushes (RFC 8935) or it polls (RFC 8936), de-duplicates them, manages its stream at the
 transmitter and hands the events to handlers. The code sits in the authentication path of its
 users, so correctness of verification beats convenience everywhere. Receiver only, no
-transmitter. Apache-2.0. Status: experimental, pre-0.1, breaking changes are acceptable.
+transmitter. Apache-2.0. Status: experimental, unreleased; the version follows the Java library
+(`0.6.0` next, see `Directory.Build.props`), and breaking changes are acceptable.
 
 This is a port of [easyssf for Java](https://github.com/easyssf/easyssf). The Java code is the
 reference for protocol behaviour, names and tests; a local checkout is expected at `../easyssf`.
