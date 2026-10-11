@@ -12,7 +12,6 @@ discovery, PUSH and POLL delivery, stream management and replay protection yours
 that reacting to a security event is a handler:
 
 ```csharp
-// the shape the port is heading for; the handler interface arrives with the next slice
 ISsfEventHandler handler = SsfEventHandler.For("CaepSessionRevoked", (context, cancellationToken) =>
 {
     SsfSubject subject = context.SubjectFor("CaepSessionRevoked");
@@ -20,6 +19,9 @@ ISsfEventHandler handler = SsfEventHandler.For("CaepSessionRevoked", (context, c
     return Task.CompletedTask;
 });
 ```
+
+A few lines wire the parts together, see [Receiving pushed SETs](#receiving-pushed-sets); the
+hosting and ASP.NET Core integration that does it for you is on the way.
 
 | | |
 |---|---|
@@ -34,9 +36,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, a `TestTransmitter` for the tests of a receiver |
-| Next | SET processing: `jti` de-duplication, the push handler (RFC 8935), the event context and handler interface |
-| Then | Typed CAEP, RISC and SCIM events and handlers; hosting and ASP.NET Core (options, DI, `MapSsfPush`, metrics, health); polling and stream management (RFC 8936, SSF stream API); token revocation and session termination; ADO.NET stores; the conformance harness |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, metrics, a `TestTransmitter` for the tests of a receiver |
+| Next | Typed CAEP, RISC and SCIM events and handlers |
+| Then | Hosting and ASP.NET Core (options, DI, `MapSsfPush`, metrics, health); polling and stream management (RFC 8936, SSF stream API); token revocation and session termination; ADO.NET stores; the conformance harness |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -45,7 +47,7 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 | Project | | Depends on |
 |---|---|---|
 | `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
-| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification today; de-duplication, event handlers, push handling, polling, stream management, revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling and metrics today; polling, stream management, revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs and serves its JWK Set and metadata through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -64,6 +66,15 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
   Events, and the conventions of early SSF drafts and of Keycloak behind explicit modes.
 - Knows the **event types** of SSF, CAEP, RISC and SCIM Events (RFC 9967) by URI and by alias
   (`CaepSessionRevoked`), and lets you register aliases for vendor specific types.
+- **Receives pushed SETs** (RFC 8935): checks the transmitter's `Authorization` header in constant
+  time, verifies, **skips SETs it has already processed** (`jti` de-duplication with a lease, so
+  that a SET another instance is handling is left alone and one abandoned by a crash is taken
+  over), hands verified events to your `ISsfEventHandler`s, and answers `202`, `400` with an RFC
+  8935 error document, `401`, `413`, `500` or `503` as the case requires.
+- Rejects a SET whose subject has a member the transmitter declared **critical** and the
+  application does not interpret, as SSF requires.
+- Records **metrics** with `System.Diagnostics.Metrics` under the Java library's names
+  (`easyssf.receiver.sets`, `.events`, `.poll`).
 
 ## Verifying a SET
 
@@ -105,6 +116,44 @@ holds the accepted algorithms, the minimum RSA key size, the clock skew, the sub
 mode (`Strict` for SSF 1.0, `Legacy` for transmitters that put the subject into the event payload)
 and the `TimeProvider`. For several transmitters, `IssuerRoutingSsfSetVerifier` picks the verifier
 by the `iss` claim.
+
+## Receiving pushed SETs
+
+`SsfPushHandler` does everything but the HTTP: give it the `Authorization` header and the body of
+the request the transmitter posted, and send back the status and body it returns.
+
+```csharp
+using EasySsf.Receiver.Event;
+using EasySsf.Receiver.Push;
+using EasySsf.Receiver.Set;
+
+ISsfEventHandler handler = SsfEventHandler.For("CaepSessionRevoked", (context, cancellationToken) =>
+{
+    SsfSubject subject = context.SubjectFor("CaepSessionRevoked");
+    return sessions.EndAsync(subject.SessionId, subject.Subject, context.IdempotencyKey, cancellationToken);
+});
+SsfSetProcessor processor = new(verifier, new InMemorySsfJtiDedupStore(capacity: 10_000), [handler]);
+SsfPushHandler pushHandler = new(processor, expectedAuthorizationHeader: "Bearer " + pushSecret);
+
+// in the endpoint the transmitter posts to, for example a minimal API:
+app.MapPost("/ssf/push", async (HttpRequest request, CancellationToken cancellationToken) =>
+{
+    using MemoryStream body = new();
+    await request.Body.CopyToAsync(body, cancellationToken);
+    SsfPushResponse response = await pushHandler.HandleAsync(request.Headers.Authorization, body.ToArray(), cancellationToken);
+    return response.Body is null ? Results.StatusCode(response.Status)
+        : Results.Text(response.Body, SsfPushResponse.ContentType, statusCode: response.Status);
+});
+```
+
+Handlers are called for every SET and must be idempotent: a SET is handled at least once, not
+exactly once. Throwing from a handler makes the push handler answer `500`, so the transmitter
+delivers the SET again; the other handlers still run. `SsfEventHandler.Of` handles every SET,
+`SsfEventHandler.For` only those with a given event; `context.EventFor` gives the payload as a
+`JsonElement`, `context.EventTimestamp` the `event_timestamp` or the issue time. For a
+`processor.ProcessAsync` call of your own, the outcome tells whether the SET was handled or a
+duplicate, and `SsfSetProcessorOptions` takes the metrics, the critical subject members a
+transmitter declares and the stream verification hook.
 
 ## Testing your receiver
 

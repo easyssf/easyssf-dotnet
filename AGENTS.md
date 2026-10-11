@@ -27,7 +27,7 @@ order:
 |---|---|---|
 | `src/EasySsf.Core` | The vocabulary: SETs, subjects, event types, as immutable records over `JsonElement` | BCL only |
 | `src/EasySsf.Testing` | `TestTransmitter`, an in-process transmitter that signs SETs and serves its JWK Set through an `HttpMessageHandler` | Core |
-| `src/EasySsf.Receiver` | The receiver without a framework: verification, and later de-duplication, push and poll, stream management, handlers | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
+| `src/EasySsf.Receiver` | The receiver without a framework: verification, de-duplication, push, handlers and metrics; later poll, stream management, revocation and session termination | Core, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `tests/EasySsf.Core.Tests`, `tests/EasySsf.Receiver.Tests` | xUnit tests, ported from the Java modules | the project under test, Testing |
 
 Planned, in this order: `EasySsf.Receiver.Hosting` (options, DI, background services, health),
