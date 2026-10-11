@@ -59,8 +59,12 @@ dotnet test --filter "FullyQualifiedName~JwtSsfSetVerifierTests"
 dotnet format --verify-no-changes               # formatting per .editorconfig
 ```
 
-- `src/Directory.Build.props` sets `TreatWarningsAsErrors`, `IsAotCompatible` and XML
-  documentation for the libraries. An `IL2026`/`IL3050` error means a reflection-based or
+- Package versions live in `Directory.Packages.props` (central package management): a
+  `PackageReference` names no version, a new package gets a `PackageVersion` entry there, and the
+  `Microsoft.Extensions.*` and `Microsoft.AspNetCore.*` packages move together to the same patch.
+- `src/Directory.Build.props` sets `TreatWarningsAsErrors`, `IsAotCompatible`, XML documentation
+  and the NuGet metadata (project and repository URL, tags, the README, symbols with Source Link)
+  for the libraries; every library project sets its own `Description`. An `IL2026`/`IL3050` error means a reflection-based or
   dynamic-code path crept in; fix the code, do not suppress the warning.
 - The tests need no network and no Docker: `TestTransmitter` answers in-process and the Data
   tests use SQLite files. `EASYSSF_DATABASE_TESTS=true dotnet test tests/EasySsf.Receiver.Data.Tests`

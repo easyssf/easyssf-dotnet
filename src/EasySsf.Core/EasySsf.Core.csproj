@@ -1,6 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <Description>The vocabulary of the OpenID Shared Signals Framework for .NET: Security Event Tokens, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration and transmitter metadata, as immutable records over System.Text.Json.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

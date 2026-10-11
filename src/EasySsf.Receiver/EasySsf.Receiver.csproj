@@ -1,5 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <Description>The easyssf SSF receiver without a framework: SET verification, de-duplication, push and poll delivery, stream management, event handlers for CAEP, RISC and SCIM, token revocation and session termination, metrics.</Description>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\EasySsf.Core\EasySsf.Core.csproj" />
   </ItemGroup>

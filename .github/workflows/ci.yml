@@ -36,6 +36,8 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  # deterministic builds with normalized source paths, so that Source Link resolves from a package
+  ContinuousIntegrationBuild: true
 
 jobs:
   # Which kind of files the change touches, to skip what cannot be affected.

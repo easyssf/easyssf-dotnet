@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <Description>Test support for easyssf receivers: an in-process transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates stream management and polling through an HttpMessageHandler.</Description>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\EasySsf.Core\EasySsf.Core.csproj" />
   </ItemGroup>
