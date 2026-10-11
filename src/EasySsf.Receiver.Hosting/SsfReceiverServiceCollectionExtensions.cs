@@ -7,6 +7,8 @@ using EasySsf.Receiver.Event;
 using EasySsf.Receiver.Metrics;
 using EasySsf.Receiver.Poll;
 using EasySsf.Receiver.Push;
+using EasySsf.Receiver.Revocation;
+using EasySsf.Receiver.Session;
 using EasySsf.Receiver.Set;
 using EasySsf.Receiver.Transmitter;
 
@@ -69,6 +71,11 @@ public static class SsfReceiverServiceCollectionExtensions
     public static SsfReceiverBuilder AddSsfReceiver(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(SsfReceiverMarker)))
+        {
+            return new SsfReceiverBuilder(services);
+        }
+        services.AddSingleton<SsfReceiverMarker>();
         services.AddOptions<SsfReceiverOptions>().ValidateOnStart();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<SsfReceiverOptions>, SsfReceiverOptionsValidator>());
         services.AddLogging();
@@ -170,9 +177,54 @@ public static class SsfReceiverServiceCollectionExtensions
                 ? new SsfPushHandler(processor, transmitters.All[0].PushAuthorizationHeader, metrics, logger)
                 : new SsfPushHandler(processor, transmitters.PushAuthorizationHeader, metrics, logger);
         });
+        services.TryAddSingleton<ISsfTokenRevocationStore>(provider =>
+        {
+            SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
+            return new InMemorySsfTokenRevocationStore(options.Revocation.Ttl);
+        });
+        services.AddSingleton<ISsfEventHandler>(provider =>
+        {
+            SsfRevocationOptions revocation = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value.Revocation;
+            if (!revocation.Enabled)
+            {
+                return NullEventHandler.Instance;
+            }
+            return new SsfTokenRevocationEventHandler(provider.GetRequiredService<ISsfTokenRevocationStore>(), revocation.EffectiveSessionEventTypes,
+                revocation.UserEventTypes, provider.GetRequiredService<ILogger<SsfTokenRevocationEventHandler>>());
+        });
+        services.AddSingleton<ISsfEventHandler>(provider =>
+        {
+            SsfSessionTerminationOptions termination = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value.SessionTermination;
+            ISsfSessionTerminator? terminator = provider.GetService<ISsfSessionTerminator>();
+            if (!termination.Enabled || terminator is null)
+            {
+                return NullEventHandler.Instance;
+            }
+            return new SsfSessionTerminationEventHandler(terminator, termination.EffectiveSessionEventTypes, termination.EffectiveUserEventTypes,
+                provider.GetRequiredService<ILogger<SsfSessionTerminationEventHandler>>());
+        });
         services.TryAddSingleton<SsfReceiverHealthCheck>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, SsfReceiverHostedService>());
         return new SsfReceiverBuilder(services);
+    }
+
+    /// <summary>
+    /// Marks that <see cref="AddSsfReceiver(IServiceCollection)"/> ran, so that a second call adds
+    /// nothing twice.
+    /// </summary>
+    private sealed class SsfReceiverMarker;
+
+    /// <summary>
+    /// Stands in for an integration that is switched off or has nothing to work with.
+    /// </summary>
+    private sealed class NullEventHandler : ISsfEventHandler
+    {
+        public static NullEventHandler Instance { get; } = new();
+
+        public Task HandleAsync(SsfEventContext eventContext, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private static void UserAgent(HttpClient client, SsfReceiverOptions options)

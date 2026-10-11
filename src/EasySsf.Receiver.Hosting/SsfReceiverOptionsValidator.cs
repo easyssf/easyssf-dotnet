@@ -62,6 +62,10 @@ public sealed class SsfReceiverOptionsValidator : IValidateOptions<SsfReceiverOp
         {
             failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Http:Timeout: must be positive");
         }
+        if (options.Revocation.Ttl <= TimeSpan.Zero)
+        {
+            failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Revocation:Ttl: must be positive");
+        }
         return (failures.Count == 0) ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 

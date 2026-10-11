@@ -64,6 +64,16 @@ public sealed class SsfReceiverOptions : SsfTransmitterOptions
     public SsfDedupOptions Dedup { get; } = new();
 
     /// <summary>
+    /// Revocation of access tokens and authentication cookies by security events.
+    /// </summary>
+    public SsfRevocationOptions Revocation { get; } = new();
+
+    /// <summary>
+    /// Termination of server-side sessions by security events.
+    /// </summary>
+    public SsfSessionTerminationOptions SessionTermination { get; } = new();
+
+    /// <summary>
     /// Whether the default transmitter is configured: an issuer is set at <c>EasySsf:Receiver</c>.
     /// </summary>
     public bool HasDefaultTransmitter => !string.IsNullOrWhiteSpace(TransmitterIssuer);
@@ -160,4 +170,108 @@ public sealed class SsfDedupOptions
     /// handler.
     /// </summary>
     public TimeSpan Lease { get; set; } = TimeSpan.FromSeconds(60);
+}
+
+/// <summary>
+/// Revocation of access tokens and authentication cookies by security events: the
+/// <c>ISsfTokenRevocationStore</c> and the handler that fills it. A JwtBearer scheme with
+/// <c>UseSsfTokenRevocation()</c> and a cookie scheme with <c>UseSsfSessionRevocation()</c> consult
+/// the store. The Java starter calls this the resource server integration.
+/// </summary>
+public sealed class SsfRevocationOptions
+{
+    /// <summary>
+    /// The event types that revoke sessions when <see cref="SessionEventTypes"/> is left empty:
+    /// <c>CaepSessionRevoked</c>.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DefaultSessionEventTypes = ["CaepSessionRevoked"];
+
+    /// <summary>
+    /// Whether revocations are recorded and tokens of revoked sessions and subjects rejected.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Event types (alias or URI) that revoke the session they name, or all tokens of the user issued
+    /// up to the event if they name none. Empty, the default, means
+    /// <see cref="DefaultSessionEventTypes"/>.
+    /// </summary>
+    public List<string> SessionEventTypes { get; } = [];
+
+    /// <summary>
+    /// Event types (alias or URI) that revoke all tokens of the user they name, issued up to the
+    /// event, whether or not the event names a session; for example <c>CaepCredentialChange</c> for
+    /// an application whose sessions are cookies. None by default.
+    /// </summary>
+    public List<string> UserEventTypes { get; } = [];
+
+    /// <summary>
+    /// How long the in-memory store remembers a revocation. Must be at least the maximum token or
+    /// cookie lifetime. One hour by default.
+    /// </summary>
+    public TimeSpan Ttl { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The session event types: <see cref="SessionEventTypes"/>, or <see cref="DefaultSessionEventTypes"/>
+    /// if none are configured.
+    /// </summary>
+    public IReadOnlyList<string> EffectiveSessionEventTypes => (SessionEventTypes.Count > 0) ? SessionEventTypes : DefaultSessionEventTypes;
+}
+
+/// <summary>
+/// Termination of server-side sessions by security events, through the
+/// <c>ISsfSessionTerminator</c> the application registers. Without one, nothing is terminated:
+/// stateless authentication cookies are rejected by the revocation check instead. The Java starter
+/// calls this the OIDC client integration.
+/// </summary>
+public sealed class SsfSessionTerminationOptions
+{
+    /// <summary>
+    /// The event types that terminate sessions when <see cref="SessionEventTypes"/> is left empty:
+    /// <c>CaepSessionRevoked</c>.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DefaultSessionEventTypes = ["CaepSessionRevoked"];
+
+    /// <summary>
+    /// The event types that terminate the sessions of a user when <see cref="UserEventTypes"/> is
+    /// left empty: <c>CaepCredentialChange</c>.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DefaultUserEventTypes = ["CaepCredentialChange"];
+
+    /// <summary>
+    /// Whether local sessions are terminated when a matching event is received and an
+    /// <c>ISsfSessionTerminator</c> is registered.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Event types (alias or URI) that terminate the sessions identified by the event's subject
+    /// (session id and / or user). Empty, the default, means <see cref="DefaultSessionEventTypes"/>.
+    /// </summary>
+    public List<string> SessionEventTypes { get; } = [];
+
+    /// <summary>
+    /// Event types (alias or URI) that terminate all sessions of the user identified by the event's
+    /// subject. Empty, the default, means <see cref="DefaultUserEventTypes"/>.
+    /// </summary>
+    public List<string> UserEventTypes { get; } = [];
+
+    /// <summary>
+    /// Attributes of the <c>scim</c> subject of a SCIM Event (RFC 9967) and the claim of the
+    /// logged-in user each is compared with, e.g. <c>externalId: sub</c>. A multi-valued attribute
+    /// such as <c>emails</c> matches if any of its values does. The subject matches if any pair does.
+    /// Empty, the default, means <c>SsfSubjectClaimsMatcher.DefaultScimAttributeClaims</c>.
+    /// </summary>
+    public Dictionary<string, string> ScimAttributeClaims { get; } = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<string> EffectiveSessionEventTypes => (SessionEventTypes.Count > 0) ? SessionEventTypes : DefaultSessionEventTypes;
+
+    public IReadOnlyList<string> EffectiveUserEventTypes => (UserEventTypes.Count > 0) ? UserEventTypes : DefaultUserEventTypes;
+
+    /// <summary>
+    /// The attribute-claim pairs a <c>scim</c> subject is matched by: <see cref="ScimAttributeClaims"/>,
+    /// or the defaults of <c>SsfSubjectClaimsMatcher</c> if none are configured.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> EffectiveScimAttributeClaims
+        => (ScimAttributeClaims.Count > 0) ? ScimAttributeClaims : Receiver.Session.SsfSubjectClaimsMatcher.DefaultScimAttributeClaims;
 }

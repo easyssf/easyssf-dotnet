@@ -38,9 +38,9 @@ The receiver is ported slice by slice from the Java library, each slice with the
 
 | | |
 |---|---|
-| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check) and the ASP.NET Core push endpoint |
-| Next | Token revocation for JwtBearer resource servers and session termination for cookie-authenticated OIDC clients |
-| Then | ADO.NET stores; the conformance harness; a Keycloak example |
+| Done | The vocabulary (`SsfEventToken`, `SsfSubject`, `SsfEventTypes`, ...), SET verification against the transmitter's JWK Set with the SSF error codes, `jti` de-duplication, the push handler (RFC 8935), event handlers, typed CAEP, RISC and SCIM events with dispatching handlers, metadata discovery, client credentials, the stream management API, stream registration, polling (RFC 8936), metrics, a `TestTransmitter` for the tests of a receiver, hosting (options, DI, hosted service, health check), the ASP.NET Core push endpoint, and the built-in reactions: access token revocation for JwtBearer and cookie session revocation |
+| Next | ADO.NET stores for processed SETs, revocations and poll acknowledgements |
+| Then | The conformance harness; a Keycloak example |
 
 A transmitter is not planned; `EasySsf.Core` is written so that one could share it.
 
@@ -51,7 +51,7 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
 | `EasySsf.Core` | The data structures of SSF: SETs, subjects, event types, the typed CAEP, RISC and SCIM events, stream configuration, transmitter metadata, as immutable records over `System.Text.Json` elements. Trim- and AOT-safe, no reflection-based serialization. | nothing |
 | `EasySsf.Receiver` | The receiver, independent of any framework: SET verification, de-duplication, event handlers, push handling, polling, stream management, CAEP, RISC and SCIM handlers and metrics today; revocation and session termination as the port proceeds. | `EasySsf.Core`, `Microsoft.IdentityModel.JsonWebTokens`, `Microsoft.Extensions.Logging.Abstractions` |
 | `EasySsf.Receiver.Hosting` | The receiver for any `Microsoft.Extensions.Hosting` application: `SsfReceiverOptions` bound from `EasySsf:Receiver`, `AddSsfReceiver()`, the `SsfTransmitterFactory` that builds the parts from the options, validation on start, the hosted service that registers streams and polls, and a health check. | `EasySsf.Receiver`, `Microsoft.Extensions.Hosting.Abstractions`, `.Http`, `.Options.ConfigurationExtensions`, `.Diagnostics.HealthChecks` |
-| `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`: the endpoint the transmitter pushes SETs to, for minimal APIs and MVC alike. | `EasySsf.Receiver.Hosting`, ASP.NET Core |
+| `EasySsf.Receiver.AspNetCore` | `MapSsfPush()`, the endpoint the transmitter pushes SETs to, and the revocation hooks for JwtBearer (`AddSsfTokenRevocation()`) and cookie authentication (`AddSsfSessionRevocation()`). | `EasySsf.Receiver.Hosting`, ASP.NET Core, `Microsoft.AspNetCore.Authentication.JwtBearer` |
 | `EasySsf.Testing` | Test support: a transmitter that signs SETs, serves its JWK Set and metadata, hands out access tokens and emulates the stream management and poll endpoints, all through an `HttpMessageHandler`, see [Testing your receiver](#testing-your-receiver). | `EasySsf.Core` |
 
 ## What it does today
@@ -90,6 +90,11 @@ A transmitter is not planned; `EasySsf.Core` is written so that one could share 
   reports invalid ones on the next request, keeps acknowledgements in an `ISsfPollAckStore` until
   a request carried them, backs off on `Retry-After`, and authenticates with the client
   credentials grant, renewing the token ahead of its expiry and on a 401.
+- **Revokes access tokens and cookie sessions**: a `session-revoked` event records the session, or
+  the user and the time, in an `ISsfTokenRevocationStore`; a JwtBearer scheme then rejects tokens
+  with that `sid`, or that `sub` issued up to the event, and a cookie scheme signs such a principal
+  out on its next request. An `ISsfSessionTerminator` of the application ends server-side
+  sessions when the event arrives, see [Reacting to revocations](#reacting-to-revocations).
 - **Typed events**: `SsfCaepEvent` (CAEP 1.0, the common claims of section 2 and the
   event-specific ones of section 3), `SsfRiscEvent` (RISC 1.0) and `SsfScimEvent` with
   `SsfScimSubject` (SCIM Events, RFC 9967), each read from a SET with `In(eventToken)`, and the
@@ -172,6 +177,34 @@ Your own `ISsfJtiDedupStore`, `ISsfPollAckStore` or `ISsfReceiverMetrics` regist
 `AddSsfReceiver()` replace the in-memory store, the in-memory acknowledgements and the
 `System.Diagnostics.Metrics` meter.
 
+### Reacting to revocations
+
+The receiver records what `session-revoked` events (and the `Revocation:UserEventTypes` you add,
+typically `CaepCredentialChange`) revoke, scoped to the issuer of the tokens. Two lines hook that
+into the authentication of the application:
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options => ...);
+builder.Services.AddSsfTokenRevocation();      // rejects access tokens of revoked sessions and users
+
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie();
+builder.Services.AddSsfSessionRevocation();    // signs revoked cookie sessions out on their next request
+```
+
+| Event | Subject of the event | Effect |
+|---|---|---|
+| `session-revoked` | names a session (`complex` subject with a `session` member) | access tokens with that `sid`, and cookies of that session, are rejected |
+| `session-revoked` | names only a user (`iss_sub`) | access tokens and cookies of that `sub` issued up to the time of the event are rejected |
+| a `Revocation:UserEventTypes` event, e.g. `credential-change` | names a user, with or without a session | as above, for the user |
+
+The check reads `iss`, `sub`, `sid` and `iat` from the principal, by their JWT names or the claim
+types ASP.NET Core maps them to; a cookie is compared by the time it was issued. The revocations
+live in the `ISsfTokenRevocationStore`, in memory for `Revocation:Ttl` by default, which must cover
+the longest token or cookie lifetime; register your own store to share them between instances. An
+application that keeps sessions server-side registers an `ISsfSessionTerminator` instead or in
+addition; the receiver then ends the sessions of the event's subject when the event arrives, with
+`SsfSubjectClaimsMatcher` deciding which sessions belong to the subject.
+
 ### Configuration
 
 Every setting of `EasySsf:Receiver`, with its default. The settings of a transmitter, from
@@ -226,6 +259,14 @@ it.
 | `Dedup:Enabled` | `true` | |
 | `Dedup:Capacity` | `10000` | Size of the in-memory `jti` store. |
 | `Dedup:Lease` | `00:01:00` | How long a SET counts as being handled by the instance that claimed it; longer than the longest handler. |
+| `Revocation:Enabled` | `true` | Record revocations and reject tokens of revoked sessions and users. |
+| `Revocation:SessionEventTypes` | `CaepSessionRevoked` | Events that revoke the session they name, or the user if they name none. |
+| `Revocation:UserEventTypes` | | Events that revoke the user they name, session or not; `CaepCredentialChange` for cookie sessions. |
+| `Revocation:Ttl` | `01:00:00` | How long the in-memory store remembers a revocation; at least the longest token or cookie lifetime. |
+| `SessionTermination:Enabled` | `true` | End server-side sessions through the registered `ISsfSessionTerminator`. |
+| `SessionTermination:SessionEventTypes` | `CaepSessionRevoked` | Events that terminate the session (or user sessions) of their subject. |
+| `SessionTermination:UserEventTypes` | `CaepCredentialChange` | Events that terminate all sessions of their subject's user. |
+| `SessionTermination:ScimAttributeClaims:<attribute>` | `externalId: sub`, `id: sub`, `userName: preferred_username` | Attributes of the `scim` subject of a SCIM Event and the claim of the logged-in user each is compared with. |
 
 ### Health
 

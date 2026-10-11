@@ -22,7 +22,7 @@ public sealed class ReceiverApp : IAsyncDisposable
     {
         _app = app;
         BaseAddress = baseAddress;
-        Client = new HttpClient { BaseAddress = baseAddress };
+        Client = new HttpClient(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false }) { BaseAddress = baseAddress };
     }
 
     public Uri BaseAddress { get; }

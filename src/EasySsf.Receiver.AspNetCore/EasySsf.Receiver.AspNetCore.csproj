@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>ASP.NET Core integration of the easyssf SSF receiver: the push endpoint for SETs delivered with RFC 8935.</Description>
+    <Description>ASP.NET Core integration of the easyssf SSF receiver: the push endpoint for SETs delivered with RFC 8935, and the revocation of access tokens and authentication cookies.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>
