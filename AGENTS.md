@@ -125,8 +125,13 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 ## Working practice
 
 - `scratch/` is ignored by git: put plans, notes and throwaway scripts there, not into the tree.
-- Do not commit, push, tag or publish unless asked. Commits have a short imperative subject and a
-  wrapped body that says what and why.
+- Do not commit, push, tag or publish unless asked. Commits have a short imperative subject, a
+  wrapped body that says what and why, and are signed off (`git commit -s`); the CI checks the
+  `Signed-off-by` trailer of every pull request commit.
+- CI (`.github/workflows/ci.yml`) runs the cheap checks first: sign-off, then a link and spell
+  check of the Markdown files for documentation changes, then formatting, build and tests on
+  Ubuntu; Windows and macOS follow only when that passes. A change that touches only `.md` files
+  runs no build at all. `status` is the required check.
 - When a change touches verification, push handling or de-duplication, add the negative test
   before the positive one, and run the full test suite, not only the new test.
 - Do not start Docker containers or the examples' Keycloak without checking for an existing

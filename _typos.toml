@@ -1,0 +1,25 @@
+# Spell checker configuration (https://github.com/crate-ci/typos), run by the docs job of ci.yml on
+# the Markdown files. typos only flags known misspellings, so this file mostly lists the
+# identifiers of the protocol it would otherwise read as words.
+
+[files]
+extend-exclude = ["bin/", "obj/", "scratch/", "*.json"]
+
+[default]
+# hex identifiers (jti, stream ids, key fingerprints) and base64 fragments
+extend-ignore-re = ["\\b[0-9a-f]{8,}\\b", "`[^`]*`"]
+
+[default.extend-identifiers]
+# claims and members of the specifications
+iat = "iat"
+jti = "jti"
+aud = "aud"
+iss = "iss"
+sid = "sid"
+txn = "txn"
+sub_id = "sub_id"
+iss_sub = "iss_sub"
+secevent = "secevent"
+caep = "caep"
+risc = "risc"
+asyncresp = "asyncresp"

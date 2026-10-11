@@ -1,0 +1,24 @@
+# Link checker configuration for the Markdown files, run by the docs job of ci.yml:
+#   lychee --config .lychee.toml '**/*.md'
+
+no_progress = true
+# GitHub anchors such as README.md#build are checked as well
+include_fragments = "anchor-only"
+# a rate-limited server is not a broken link
+accept = ["200..=206", "429"]
+max_retries = 2
+timeout = 20
+exclude_path = ["bin", "obj", "scratch", "node_modules"]
+exclude = [
+  # placeholders and local services used in examples and tests
+  "^https?://localhost",
+  "^https?://127\\.0\\.0\\.1",
+  "^https?://host\\.docker\\.internal",
+  "^https?://[^/]*\\.example(/|:|$)",
+  "^https?://<",
+  "^mailto:",
+  # requires a logged-in GitHub user
+  "^https://github\\.com/[^/]+/[^/]+/security/advisories/new$",
+  # the compare links of CHANGELOG.md name the tag of a release before it is pushed
+  "^https://github\\.com/[^/]+/[^/]+/compare/",
+]

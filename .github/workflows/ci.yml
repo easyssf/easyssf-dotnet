@@ -1,0 +1,192 @@
+# Builds and tests every push to main and every pull request, cheap checks first:
+#
+#   changes ─┬─ sign-off (pull requests)
+#            ├─ docs       link and spell check of the Markdown files, when any changed
+#            └─ build      formatting, then every project and its tests on Ubuntu
+#                 └─ platforms  the same on Windows and macOS
+#   status     the one check to require in branch protection
+#
+# A change that touches only documentation runs sign-off and docs; a failure in build stops
+# everything behind it. Tests that will need Docker (the ADO.NET stores, the conformance harness)
+# are to be kept behind a trait and get a job of their own when they arrive.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  # Which kind of files the change touches, to skip what cannot be affected.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: classify
+        name: Classify the changed files
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request)
+              .github/scripts/changed-files.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" | tee -a "$GITHUB_OUTPUT" ;;
+            push)
+              .github/scripts/changed-files.sh "${{ github.event.before }}" "${{ github.sha }}" | tee -a "$GITHUB_OUTPUT" ;;
+            *)
+              .github/scripts/changed-files.sh | tee -a "$GITHUB_OUTPUT" ;;
+          esac
+
+  # Every commit of a pull request carries a Developer Certificate of Origin sign-off.
+  sign-off:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the Signed-off-by trailers
+        run: .github/scripts/check-signoff.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
+  # Links and spelling of the Markdown files.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --config .lychee.toml '**/*.md'
+          fail: true
+
+      - name: Check the spelling
+        uses: crate-ci/typos@v1
+        with:
+          files: '**/*.md'
+
+  # Formatting, then every project with its tests. Warnings are errors in src/ and the AOT
+  # analysers run, see src/Directory.Build.props.
+  build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Check the formatting
+        run: dotnet format --no-restore --verify-no-changes
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-ubuntu
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The same on the other platforms: the receiver sits in the authentication path of
+  # applications that run on all three, and RSA and ECDSA go through the platform crypto.
+  platforms:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    name: platforms (${{ matrix.os }})
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build and test
+        run: |
+          dotnet build --configuration Release
+          dotnet test --no-build --configuration Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The one check for branch protection: green when every job that had to run succeeded. Jobs the
+  # change did not need are skipped and count as green.
+  status:
+    if: always()
+    needs: [changes, sign-off, docs, build, platforms]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key')
+          if [ -n "$failed" ]; then
+            echo "::error::failed or cancelled: $(echo "$failed" | paste -sd, -)"
+            exit 1
+          fi
