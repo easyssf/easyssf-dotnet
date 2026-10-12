@@ -196,11 +196,14 @@ a label (`0.6.0-alpha.1`).
 
 The push uses [trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing):
 no API key is stored, the job (`permissions: id-token: write`) exchanges its GitHub OIDC token with
-`NuGet/login` for an API key of the account that lives one hour. The policy on NuGet.org (account
-menu, "Trusted Publishing", owner `easyssf`) names repository owner `easyssf`, repository
-`easyssf-dotnet`, workflow file `release.yml` and the environment `release`, which is the GitHub
-environment the job runs in; a required reviewer on that environment holds a release until
-approved. A policy starts out temporarily active for seven days until the first successful push
+`NuGet/login` for an API key that lives one hour. The policy on NuGet.org (account menu, "Trusted
+Publishing") is owned by the organization `easyssf` and names repository owner `easyssf`,
+repository `easyssf-dotnet`, workflow file `release.yml`, the environment `release`, which is the
+GitHub environment the job runs in, and the glob `EasySsf.*`. The exchange names the member of
+the organization who created the policy, not the organization: the repository secret `NUGET_USER`
+holds that NuGet.org profile name, and the policy has to be recreated by the new creator when it
+changes hands. A required reviewer on the environment holds a release until approved. A policy of
+a private repository starts out temporarily active for seven days until the first successful push
 binds it to the repository.
 
 A release goes through a pull request like every other change: set `<Version>` in

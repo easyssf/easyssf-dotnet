@@ -129,13 +129,15 @@ jobs:
           fi
 
       - name: Log in to NuGet.org
-        # exchanges the job's OIDC token for an API key of the account that owns the policy; the
-        # key is valid for one hour, so this runs right before the push. The user is the NuGet.org
-        # profile name, not an email address.
+        # exchanges the job's OIDC token for an API key that publishes on behalf of the account
+        # that owns the policy; the key is valid for one hour, so this runs right before the push.
+        # The user is the NuGet.org profile name of the member who created the policy, not the
+        # organization that owns it (the exchange answers 401 "no matching trust policy owned by
+        # user" otherwise), and not an email address.
         id: login
         uses: NuGet/login@v1
         with:
-          user: easyssf
+          user: ${{ secrets.NUGET_USER }}
 
       - name: Push to NuGet.org
         # --skip-duplicate makes a rerun after a partial push idempotent: NuGet.org refuses to
