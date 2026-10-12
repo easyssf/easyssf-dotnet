@@ -256,9 +256,12 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
         registrar.Start();
         try
         {
-            await Eventually.DuringAsync(() => _receiverStream.StreamId is null, TimeSpan.FromMilliseconds(200));
+            // the first attempt fails and is recorded; the registrar keeps trying without a stream
+            await Eventually.UntilAsync(() => registrar.LastError is not null);
+            Assert.Null(_receiverStream.StreamId);
             Assert.Equal(SsfStreamRegistrarState.Registering, registrar.State);
-            Assert.NotNull(registrar.LastError);
+            await Eventually.DuringAsync(() => _receiverStream.StreamId is null && registrar.State == SsfStreamRegistrarState.Registering,
+                TimeSpan.FromMilliseconds(200));
             _transmitter.Available = true;
             await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
         }
