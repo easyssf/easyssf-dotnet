@@ -539,6 +539,25 @@ the specifications do, so do not switch over them exhaustively. `SsfScimOperatio
 `notice` and `full` variants of a provisioning event into one operation; `IsFull` and `IsNotice`
 tell which arrived.
 
+**Event types and aliases.** Event types are identified by their URIs; the aliases are a convenience
+of easyssf, the family and the event name in PascalCase: `CaepSessionRevoked` is
+`https://schemas.openid.net/secevent/caep/event-type/session-revoked`, `RiscAccountDisabled` and
+`ScimProvCreateFull` likewise. Both forms are accepted wherever an event type is named; use the URIs
+where you persist event types, and `SsfEventTypes.Resolve` and `SsfEventTypes.AliasOf` to go from one
+to the other. Vendor specific event types get aliases of your own, which then work in
+`EventsRequested`, `eventContext.HasEvent` and your handlers like the built-in ones; an alias cannot
+redefine a built-in or an earlier one:
+
+```csharp
+SsfEventTypes.RegisterAlias("AcmeLogin", "https://events.acme.example/login");
+```
+
+```json
+{ "EasySsf": { "Receiver": { "EventAliases": { "AcmeLogin": "https://events.acme.example/login" } } } }
+```
+
+The hosting package registers the configured aliases on startup.
+
 ## Testing your receiver
 
 `EasySsf.Testing` contains `TestTransmitter`, a transmitter that signs SETs and serves its JWK
