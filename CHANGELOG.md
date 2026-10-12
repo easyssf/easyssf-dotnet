@@ -11,18 +11,23 @@ full: the same protocol behaviour, the same options and defaults, the same datab
 the lessons the port taught the Java library in return went into both at once (the audience a
 receiver has to know, the revocation TTL of a day, the renewal of a dedup claim while handlers
 run). The same version therefore means the same feature level on both sides, and a reader can hold
-the two changelogs side by side. Versions 0.1.0 to 0.5.0 never existed in .NET. The first releases
-of the line are prereleases (`0.6.0-alpha.N`) while the API settles; `0.6.0` follows.
+the two changelogs side by side. Versions 0.1.0 to 0.5.0 never existed in .NET. Below 1.0 a
+minor version may break the API, as in the Java library; between two minor versions, `-alpha.N`
+prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-SNAPSHOT`).
 
 ## [Unreleased]
+
+## [0.6.0] - 2026-10-12
+
+The release of 0.6.0-alpha.1 under the version of the Java library it matches; the code is the
+same. The README shows the `PackageReference` of every package.
 
 ## [0.6.0-alpha.1] - 2026-10-12
 
 The first release: a receiver for the OpenID Shared Signals Framework 1.0 with CAEP, RISC and SCIM
 Events, as a framework-free .NET library with hosting, ASP.NET Core and ADO.NET integrations and
 an in-process test transmitter. Six packages under the reserved prefix `EasySsf`, targeting
-`net10.0`, trim- and AOT-safe except where noted. Experimental: breaking changes are to be expected
-until `0.6.0`.
+`net10.0`, trim- and AOT-safe except where noted. Experimental: a minor version may break the API.
 
 ### Added
 
@@ -69,5 +74,6 @@ until `0.6.0`.
   conformance suite with push and poll delivery. Both are built with the solution and not
   published.
 
-[Unreleased]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0-alpha.1...HEAD
+[Unreleased]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0-alpha.1...v0.6.0
 [0.6.0-alpha.1]: https://github.com/easyssf/easyssf-dotnet/releases/tag/v0.6.0-alpha.1

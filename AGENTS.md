@@ -12,8 +12,9 @@ integration to follow. A receiver verifies Security Event Tokens (SETs, RFC 8417
 pushes (RFC 8935) or it polls (RFC 8936), de-duplicates them, manages its stream at the
 transmitter and hands the events to handlers. The code sits in the authentication path of its
 users, so correctness of verification beats convenience everywhere. Receiver only, no
-transmitter. Apache-2.0. Status: experimental, unreleased; the version follows the Java library
-(`0.6.0` next, see `Directory.Build.props`), and breaking changes are acceptable.
+transmitter. Apache-2.0. Status: experimental, on NuGet.org since `0.6.0`; the version follows
+the Java library (`0.7.0-alpha.N` while Java is at `0.7.0-SNAPSHOT`, see `Directory.Build.props`),
+and below 1.0 a minor version may break the API.
 
 This is a port of [easyssf for Java](https://github.com/easyssf/easyssf). The Java code is the
 reference for protocol behaviour, names and tests; a local checkout is expected at `../easyssf`.
@@ -175,7 +176,8 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 
 - `README.md` is the user document: its "Configuration" table lists every setting with its default,
   and a new option, alias, subject format or handler is documented there in the same change. Keep
-  its examples compiling against the current API.
+  its examples compiling against the current API. Its `PackageReference` snippets and the status
+  row name the released version; a release updates them.
 - `CHANGELOG.md` follows Keep a Changelog: a user-visible change gets a line under `Unreleased` in
   the same change, and a release turns that section into the section of its version. The release
   workflow publishes the section of the released version as the release notes and fails without

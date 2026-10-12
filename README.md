@@ -32,7 +32,7 @@ behaviour; the two share their test suites, their database tables and their Keyc
 
 | | |
 |---|---|
-| **Status** | Experimental, pre-alpha: feature complete relative to the Java library, nothing is on NuGet yet |
+| **Status** | Experimental, feature complete relative to the Java library; on [NuGet.org](https://www.nuget.org/profiles/easyssf) since `0.6.0`, and below 1.0 a minor version may break the API |
 | **.NET** | 10, the current LTS; older runtimes leave support in November 2026 and are not targeted |
 | **Scope** | Receiver only; a transmitter is not planned, `EasySsf.Core` is written so that one could share it |
 | **Package prefix** | `EasySsf` |
@@ -99,7 +99,13 @@ behaviour; the two share their test suites, their database tables and their Keyc
 
 ## Getting started
 
-Reference `EasySsf.Receiver.Hosting` and, for push delivery, `EasySsf.Receiver.AspNetCore`.
+Reference `EasySsf.Receiver.Hosting` and, for push delivery, `EasySsf.Receiver.AspNetCore`:
+
+```xml
+<PackageReference Include="EasySsf.Receiver.Hosting" Version="0.6.0" />
+<PackageReference Include="EasySsf.Receiver.AspNetCore" Version="0.6.0" />
+```
+
 Configure the transmitter, register the receiver and your handlers, and map the push endpoint:
 
 ```json
@@ -210,6 +216,10 @@ addition; the receiver then ends the sessions of the event's subject when the ev
 A SET is pushed to one instance of an application, and a revocation it records in memory is
 unknown to the others. `EasySsf.Receiver.Data` keeps that state in the database of the
 application instead, in three tables that are the same as those of the Java library:
+
+```xml
+<PackageReference Include="EasySsf.Receiver.Data" Version="0.6.0" />
+```
 
 | Table | Store | Content |
 |---|---|---|
@@ -349,6 +359,12 @@ The meter `EasySsf.Receiver` records, under the names of the Java library:
 | `easyssf.receiver.poll.pending-acks` | gauge | `transmitter`; acknowledgements and error reports waiting for the next poll request |
 
 ## Verifying a SET
+
+Without a framework, `EasySsf.Receiver` is the package to reference (it brings `EasySsf.Core`):
+
+```xml
+<PackageReference Include="EasySsf.Receiver" Version="0.6.0" />
+```
 
 ```csharp
 using EasySsf.Core.Event;
@@ -528,6 +544,10 @@ tell which arrived.
 `EasySsf.Testing` contains `TestTransmitter`, a transmitter that signs SETs and serves its JWK
 Set and metadata to an `HttpClient` in-process, without a socket. The tests of easyssf-dotnet use
 it.
+
+```xml
+<PackageReference Include="EasySsf.Testing" Version="0.6.0" />
+```
 
 ```csharp
 using EasySsf.Testing;
