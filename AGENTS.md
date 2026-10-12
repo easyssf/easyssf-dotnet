@@ -187,8 +187,9 @@ Releases go to [NuGet.org](https://www.nuget.org) under the ID prefix `EasySsf`,
 for the NuGet.org account `easyssf` (reserved on 2026-10-12); only that account can push these IDs.
 `release.yml` runs on a pushed tag `v<version>`: it checks that the tag matches `<Version>` in
 `Directory.Build.props`, takes the release notes from the `CHANGELOG.md` section of that version,
-builds, tests and packs the seven libraries of `src/` with their symbol packages (the tests and
-examples are `IsPackable=false`), checks that every package is under the prefix, pushes them and
+builds, tests and packs the six libraries of `src/` with their symbol packages (the tests, the
+examples and `EasySsf.Testing.Conformance` are `IsPackable=false`; the conformance harness stays
+unpublished for now), checks that every package is under the prefix, pushes them and
 creates the GitHub release with the packages attached, marked as a prerelease when the version has
 a label (`0.6.0-alpha.1`).
 

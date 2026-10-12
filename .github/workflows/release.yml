@@ -2,9 +2,10 @@
 # "v<version>" whose version matches <Version> in Directory.Build.props, see "Releasing" in
 # AGENTS.md.
 #
-# The packages are the seven libraries under src/ (IsPackable is false for the tests and the
-# examples), built once in Release with ContinuousIntegrationBuild so that Source Link resolves,
-# tested, packed with their symbol packages (.snupkg, pushed alongside the .nupkg), and pushed with
+# The packages are the six libraries under src/ with IsPackable left on (the tests, the examples
+# and EasySsf.Testing.Conformance are IsPackable=false), built once in Release with
+# ContinuousIntegrationBuild so that Source Link resolves, tested, packed with their symbol
+# packages (.snupkg, pushed alongside the .nupkg), and pushed with
 # trusted publishing: no stored API key, the job's GitHub OIDC token is exchanged for a NuGet.org
 # API key that lives one hour, on behalf of the account "easyssf", which holds the reserved ID
 # prefix "EasySsf". The trusted publishing policy of that account names this repository and this
@@ -122,8 +123,8 @@ jobs:
             fi
           done
           count=$(ls packages/*.nupkg | wc -l)
-          if [ "$count" -ne 7 ]; then
-            echo "::error::expected 7 packages, found $count"
+          if [ "$count" -ne 6 ]; then
+            echo "::error::expected 6 packages, found $count"
             exit 1
           fi
 

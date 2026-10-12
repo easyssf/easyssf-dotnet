@@ -4,6 +4,9 @@
     <Description>Runs the OpenID conformance suite's SSF receiver test plans against a receiver built on easyssf: the suite started with Testcontainers, the scenarios the receiver plays and the modules of the plans.</Description>
     <!-- a test harness that drives Docker containers; Testcontainers is not trimmable -->
     <IsAotCompatible>false</IsAotCompatible>
+    <!-- built with the solution, not published for now: it is used by the conformance tests of
+         this repository, and it embeds the TLS material of the receiver under test -->
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
