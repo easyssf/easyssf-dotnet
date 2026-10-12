@@ -176,9 +176,10 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
 - `README.md` is the user document: its "Configuration" table lists every setting with its default,
   and a new option, alias, subject format or handler is documented there in the same change. Keep
   its examples compiling against the current API.
-- `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
-  Until then, the git history is the record of what changed. The release workflow publishes the
-  section of the released version as the release notes and fails without it.
+- `CHANGELOG.md` follows Keep a Changelog: a user-visible change gets a line under `Unreleased` in
+  the same change, and a release turns that section into the section of its version. The release
+  workflow publishes the section of the released version as the release notes and fails without
+  it. The file's introduction says why the version line starts at 0.6.0.
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.
 
 ## Releasing

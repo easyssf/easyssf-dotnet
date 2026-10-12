@@ -19,6 +19,7 @@ exclude = [
   "^mailto:",
   # requires a logged-in GitHub user
   "^https://github\\.com/[^/]+/[^/]+/security/advisories/new$",
-  # the compare links of CHANGELOG.md name the tag of a release before it is pushed
+  # the compare and release links of CHANGELOG.md name the tag of a release before it is pushed
   "^https://github\\.com/[^/]+/[^/]+/compare/",
+  "^https://github\\.com/[^/]+/[^/]+/releases/tag/",
 ]
