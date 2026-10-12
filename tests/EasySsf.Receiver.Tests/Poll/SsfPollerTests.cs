@@ -301,6 +301,19 @@ public sealed class SsfPollerTests : IClassFixture<TestTransmitter>, IDisposable
     }
 
     [Fact]
+    public async Task PollerStoppedRightAfterStartingIsSafe()
+    {
+        // StopAsync may dispose the cancellation source before the poll loop has started; the
+        // loop must not fault on that (seen on a slow CI runner)
+        for (int i = 0; i < 25; i++)
+        {
+            _poller.Start();
+            await _poller.StopAsync();
+        }
+        Assert.False(_poller.IsRunning);
+    }
+
+    [Fact]
     public async Task StopFlushesThePendingAcknowledgements()
     {
         _poller.Options.InitialDelay = TimeSpan.FromHours(1);

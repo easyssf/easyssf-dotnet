@@ -196,7 +196,8 @@ public sealed class ConformanceRun
         {
             throw new InvalidOperationException("The run was started already");
         }
-        _task = Task.Run(() => RunAsync(_stopping.Token));
+        CancellationToken stopping = _stopping.Token;
+        _task = Task.Run(() => RunAsync(stopping));
     }
 
     /// <summary>

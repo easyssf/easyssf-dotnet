@@ -151,7 +151,10 @@ public sealed class SsfPoller : IDisposable
             _options.Metrics.PollerStarted(_options.Transmitter, () => PendingAckCount);
             CancellationTokenSource stopping = new();
             _stopping = stopping;
-            _loop = Task.Run(() => RunAsync(stopping.Token), CancellationToken.None);
+            // the token is read here, not on the pool thread: StopAsync may dispose the source
+            // before the task gets to run
+            CancellationToken token = stopping.Token;
+            _loop = Task.Run(() => RunAsync(token), CancellationToken.None);
         }
         finally
         {

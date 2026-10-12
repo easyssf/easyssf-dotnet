@@ -271,6 +271,21 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     }
 
     [Fact]
+    public async Task RegistrarStoppedRightAfterStartingIsSafe()
+    {
+        // StopAsync may dispose the cancellation source before the background task has started;
+        // the task must not fault on that (seen on a slow CI runner)
+        _transmitter.Available = false;
+        for (int i = 0; i < 25; i++)
+        {
+            using SsfStreamRegistrar registrar = Registrar(SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+            registrar.Start();
+            await registrar.StopAsync();
+        }
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
     public async Task RegistrarDeletesManagedStreamOnShutdownIfAsked()
     {
         using SsfStreamRegistrar registrar = Registrar(SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));

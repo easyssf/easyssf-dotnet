@@ -153,7 +153,10 @@ public sealed class SsfStreamRegistrar : IDisposable
             _state = SsfStreamRegistrarState.Registering;
             CancellationTokenSource stopping = new();
             _stopping = stopping;
-            _registration = Task.Run(() => RegisterWithRetriesAsync(stopping.Token), CancellationToken.None);
+            // the token is read here, not on the pool thread: StopAsync may dispose the source
+            // before the task gets to run
+            CancellationToken token = stopping.Token;
+            _registration = Task.Run(() => RegisterWithRetriesAsync(token), CancellationToken.None);
         }
     }
 
