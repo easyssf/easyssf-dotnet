@@ -177,8 +177,35 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   and a new option, alias, subject format or handler is documented there in the same change. Keep
   its examples compiling against the current API.
 - `CHANGELOG.md` does not exist yet; it comes with the first release and follows Keep a Changelog.
-  Until then, the git history is the record of what changed.
+  Until then, the git history is the record of what changed. The release workflow publishes the
+  section of the released version as the release notes and fails without it.
 - `SECURITY.md` is the vulnerability reporting policy; do not change it as part of a feature.
+
+## Releasing
+
+Releases go to [NuGet.org](https://www.nuget.org) under the ID prefix `EasySsf`, which is reserved
+for the NuGet.org account `easyssf` (reserved on 2026-10-12); only that account can push these IDs.
+`release.yml` runs on a pushed tag `v<version>`: it checks that the tag matches `<Version>` in
+`Directory.Build.props`, takes the release notes from the `CHANGELOG.md` section of that version,
+builds, tests and packs the seven libraries of `src/` with their symbol packages (the tests and
+examples are `IsPackable=false`), checks that every package is under the prefix, pushes them and
+creates the GitHub release with the packages attached, marked as a prerelease when the version has
+a label (`0.6.0-alpha.1`).
+
+The push uses [trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing):
+no API key is stored, the job (`permissions: id-token: write`) exchanges its GitHub OIDC token with
+`NuGet/login` for an API key of the account that lives one hour. The policy on NuGet.org (account
+menu, "Trusted Publishing", owner `easyssf`) names repository owner `easyssf`, repository
+`easyssf-dotnet`, workflow file `release.yml` and the environment `release`, which is the GitHub
+environment the job runs in; a required reviewer on that environment holds a release until
+approved. A policy starts out temporarily active for seven days until the first successful push
+binds it to the repository.
+
+A release goes through a pull request like every other change: set `<Version>` in
+`Directory.Build.props`, turn the `Unreleased` section of the changelog into the section of the
+version with the date, merge, then push the tag on the merge's version commit and watch the
+workflow. A rerun after a partial push is safe, `--skip-duplicate` leaves the versions already on
+NuGet.org alone.
 
 ## Working practice
 
@@ -190,7 +217,8 @@ dotnet format --verify-no-changes               # formatting per .editorconfig
   check of the Markdown files for documentation changes, then formatting, build and tests on
   Ubuntu; Windows and macOS follow only when that passes. A change that touches only `.md` files
   runs no build at all. `status` is the required check. `conformance.yml` runs the four conformance
-  plans on demand (`workflow_dispatch`), one job per plan.
+  plans on demand (`workflow_dispatch`), one job per plan. `release.yml` publishes a release, see
+  "Releasing".
 - When a change touches verification, push handling or de-duplication, add the negative test
   before the positive one, and run the full test suite, not only the new test.
 - The Keycloak examples contain no SSF code apart from configuration (and a logging handler). Keep

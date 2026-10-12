@@ -1,0 +1,153 @@
+# Publishes a release to NuGet.org and creates the GitHub release. Triggered by pushing a tag
+# "v<version>" whose version matches <Version> in Directory.Build.props, see "Releasing" in
+# AGENTS.md.
+#
+# The packages are the seven libraries under src/ (IsPackable is false for the tests and the
+# examples), built once in Release with ContinuousIntegrationBuild so that Source Link resolves,
+# tested, packed with their symbol packages (.snupkg, pushed alongside the .nupkg), and pushed with
+# trusted publishing: no stored API key, the job's GitHub OIDC token is exchanged for a NuGet.org
+# API key that lives one hour, on behalf of the account "easyssf", which holds the reserved ID
+# prefix "EasySsf". The trusted publishing policy of that account names this repository and this
+# workflow file, see "Releasing" in AGENTS.md.
+name: Release
+# a tag push carries no commit for GitHub to title the run with, so name it by the tag
+run-name: Release ${{ github.ref_name }}
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  # the OIDC token that trusted publishing exchanges for the NuGet.org API key
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  # deterministic builds with normalized source paths, so that Source Link resolves from a package
+  ContinuousIntegrationBuild: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # a GitHub environment the trusted publishing policy can be restricted to, and where a
+    # required reviewer can be set
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Check that the tag matches the project version
+        run: |
+          version=$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' Directory.Build.props)
+          echo "project version: $version, tag: $GITHUB_REF_NAME"
+          if [ -z "$version" ]; then
+            echo "::error::Directory.Build.props has no <Version>"
+            exit 1
+          fi
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Directory.Build.props"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Take the release notes from the changelog
+        # the section of this version, without its heading, up to the next version heading; the
+        # workflow fails without it so that no release goes out undocumented
+        run: |
+          awk -v v="$VERSION" '
+            /^## \[/ { in_section = ($0 ~ "^## \\[" v "\\]") ; next }
+            in_section && !/^\[/ { print }
+          ' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Pack
+        run: dotnet pack --no-build --configuration Release --output packages
+
+      - name: Check the packages
+        # every package carries the released version and an ID under the reserved prefix
+        run: |
+          ls -l packages
+          for package in packages/*.nupkg; do
+            name=$(basename "$package" ".$VERSION.nupkg")
+            case "$name" in
+              EasySsf.*) ;;
+              *) echo "::error::$package is not under the EasySsf prefix or not at version $VERSION"; exit 1 ;;
+            esac
+            if [ ! -f "packages/$name.$VERSION.snupkg" ]; then
+              echo "::error::$package has no symbol package"
+              exit 1
+            fi
+          done
+          count=$(ls packages/*.nupkg | wc -l)
+          if [ "$count" -ne 7 ]; then
+            echo "::error::expected 7 packages, found $count"
+            exit 1
+          fi
+
+      - name: Log in to NuGet.org
+        # exchanges the job's OIDC token for an API key of the account that owns the policy; the
+        # key is valid for one hour, so this runs right before the push. The user is the NuGet.org
+        # profile name, not an email address.
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: easyssf
+
+      - name: Push to NuGet.org
+        # --skip-duplicate makes a rerun after a partial push idempotent: NuGet.org refuses to
+        # replace a published version, the versions already there are reported and skipped
+        run: dotnet nuget push 'packages/*.nupkg' --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+
+      - name: Create the GitHub release
+        # a version with a prerelease label (0.6.0-alpha.1) is marked as a prerelease
+        run: |
+          prerelease=
+          case "$VERSION" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag $prerelease --notes-file notes.md --title "$VERSION" packages/*.nupkg packages/*.snupkg
+        env:
+          GH_TOKEN: ${{ github.token }}
