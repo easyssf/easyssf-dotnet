@@ -17,6 +17,14 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
 
 ## [Unreleased]
 
+### Changed
+
+- `SsfStreamClient` checks the issuer of every stream configuration the transmitter returns, not only
+  of a created one: `GetStreamAsync`, `GetStreamsAsync`, `UpdateStreamAsync` and `ReplaceStreamAsync`
+  throw `SsfStreamIssuerMismatchException` as `CreateStreamAsync` did, as the SETs of a stream with
+  another issuer would not verify. `SsfStreamRegistrar` deletes a stream it created with the wrong
+  issuer, as before, and leaves an existing one alone; it fails without retrying either way.
+
 ### Fixed
 
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
