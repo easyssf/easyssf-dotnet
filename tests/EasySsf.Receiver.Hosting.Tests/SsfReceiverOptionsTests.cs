@@ -25,6 +25,7 @@ public class SsfReceiverOptionsTests
             ["EasySsf:Receiver:UnderstoodSubjectMembers:1"] = "custom",
             ["EasySsf:Receiver:Http:Timeout"] = "00:00:10",
             ["EasySsf:Receiver:Http:UserAgent"] = "my-receiver/1.0",
+            ["EasySsf:Receiver:Http:MaxResponseSize"] = "65536",
             ["EasySsf:Receiver:Dedup:Capacity"] = "500",
             ["EasySsf:Receiver:Dedup:Lease"] = "00:02:00",
             ["EasySsf:Receiver:Metrics:Enabled"] = "false",
@@ -58,6 +59,7 @@ public class SsfReceiverOptionsTests
         Assert.Equal(["user", "custom"], options.EffectiveUnderstoodSubjectMembers);
         Assert.Equal(TimeSpan.FromSeconds(10), options.Http.Timeout);
         Assert.Equal("my-receiver/1.0", options.Http.UserAgent);
+        Assert.Equal(65536, options.Http.MaxResponseSize);
         Assert.Equal(500, options.Dedup.Capacity);
         Assert.Equal(TimeSpan.FromMinutes(2), options.Dedup.Lease);
         Assert.False(options.Metrics.Enabled);
@@ -98,6 +100,7 @@ public class SsfReceiverOptionsTests
         Assert.Equal(10_000, options.Dedup.Capacity);
         Assert.Equal(TimeSpan.FromSeconds(60), options.Dedup.Lease);
         Assert.Equal(TimeSpan.FromSeconds(5), options.Http.Timeout);
+        Assert.Equal(4L * 1024 * 1024, options.Http.MaxResponseSize);
         Assert.Empty(options.UnderstoodSubjectMembers);
         Assert.Equal(SsfSubject.Members, options.EffectiveUnderstoodSubjectMembers);
         Assert.False(options.HasDefaultTransmitter);

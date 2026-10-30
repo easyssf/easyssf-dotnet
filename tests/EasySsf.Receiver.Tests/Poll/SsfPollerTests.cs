@@ -303,6 +303,25 @@ public sealed class SsfPollerTests : IClassFixture<TestTransmitter>, IDisposable
     }
 
     [Fact]
+    public async Task FailsOnAPollResponseLargerThanTheHttpClientBuffers()
+    {
+        // the hosting integration bounds the receiver's clients with Http:MaxResponseSize; a larger
+        // response fails the poll as if the transmitter were unavailable
+        _http.MaxResponseContentBufferSize = 1024;
+        for (int i = 0; i < 5; i++)
+        {
+            Queue("session-" + i);
+        }
+
+        SsfPollException ex = await Assert.ThrowsAsync<SsfPollException>(() => _poller.PollNowAsync());
+
+        Assert.Equal(0, ex.StatusCode);
+        Assert.IsType<HttpRequestException>(ex.InnerException);
+        Assert.Empty(_handled);
+        Assert.Empty(_transmitter.AcknowledgedSets);
+    }
+
+    [Fact]
     public async Task AcknowledgementsWaitInTheStoreUntilARequestCarriedThem()
     {
         InMemorySsfPollAckStore store = new();

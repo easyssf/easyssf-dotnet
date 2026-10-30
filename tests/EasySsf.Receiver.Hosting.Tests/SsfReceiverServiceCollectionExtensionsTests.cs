@@ -186,6 +186,27 @@ public sealed class SsfReceiverServiceCollectionExtensionsTests : IDisposable
     }
 
     [Fact]
+    public void ResponseSizeForCallsToTheTransmitterIsConfigurable()
+    {
+        ServiceCollection services = new();
+        services.AddReceiver(ReceiverServices.Settings(_keycloak), _keycloak);
+        using (ServiceProvider provider = services.BuildServiceProvider())
+        {
+            IHttpClientFactory factory = provider.GetRequiredService<IHttpClientFactory>();
+            Assert.Equal(4L * 1024 * 1024, factory.CreateClient(SsfReceiverDefaults.HttpClientName).MaxResponseContentBufferSize);
+            Assert.Equal(4L * 1024 * 1024, factory.CreateClient(SsfReceiverDefaults.PollHttpClientName).MaxResponseContentBufferSize);
+        }
+        services = new();
+        services.AddReceiver(ReceiverServices.Settings(_keycloak, ("EasySsf:Receiver:Http:MaxResponseSize", "65536")), _keycloak);
+        using (ServiceProvider provider = services.BuildServiceProvider())
+        {
+            IHttpClientFactory factory = provider.GetRequiredService<IHttpClientFactory>();
+            Assert.Equal(64 * 1024, factory.CreateClient(SsfReceiverDefaults.HttpClientName).MaxResponseContentBufferSize);
+            Assert.Equal(64 * 1024, factory.CreateClient(SsfReceiverDefaults.PollHttpClientName).MaxResponseContentBufferSize);
+        }
+    }
+
+    [Fact]
     public async Task DisabledReceiverStartsNothing()
     {
         ServiceCollection services = new();

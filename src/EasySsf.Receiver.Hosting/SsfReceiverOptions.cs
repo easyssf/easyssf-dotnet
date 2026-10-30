@@ -132,6 +132,20 @@ public sealed class SsfHttpOptions
     /// <c>User-Agent</c> header for calls to the transmitter. None is sent when not set.
     /// </summary>
     public string? UserAgent { get; set; }
+
+    /// <summary>
+    /// The largest response body accepted from the transmitter, in bytes, 4 MiB by default:
+    /// metadata, JWK Set, token, stream configuration and poll responses come nowhere near it, so
+    /// a larger one is a fault or an attack. It fails the call as if the transmitter were
+    /// unavailable instead of being buffered. Applied as
+    /// <see cref="HttpClient.MaxResponseContentBufferSize"/> of the receiver's HTTP clients.
+    /// </summary>
+    public long MaxResponseSize { get; set; } = DefaultMaxResponseSize;
+
+    /// <summary>
+    /// The default of <see cref="MaxResponseSize"/>, 4 MiB.
+    /// </summary>
+    public const long DefaultMaxResponseSize = 4L * 1024 * 1024;
 }
 
 /// <summary>

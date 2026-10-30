@@ -24,6 +24,11 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
   at startup) or taken from the stream configuration the transmitter returned: `https`, or `http` on
   loopback addresses only, unless `AllowInsecureHttp` is set. The acknowledgements sent on stop pass
   the same check. New API: `SsfPollerOptions.UriPolicy`.
+- Response bodies the receiver reads from the transmitter (metadata, JWK Set, token, stream
+  configurations, poll responses) are bounded, 4 MiB by default; a larger response fails the call as
+  if the transmitter were unavailable instead of being buffered. The hosting integration sets the
+  limit as `MaxResponseContentBufferSize` of its HTTP clients from the new setting
+  `EasySsf:Receiver:Http:MaxResponseSize`; a framework-free receiver sets it on its `HttpClient`.
 
 ### Changed
 

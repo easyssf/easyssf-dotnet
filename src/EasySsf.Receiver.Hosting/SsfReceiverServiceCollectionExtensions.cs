@@ -84,7 +84,7 @@ public static class SsfReceiverServiceCollectionExtensions
         {
             SsfReceiverOptions options = provider.GetRequiredService<IOptions<SsfReceiverOptions>>().Value;
             client.Timeout = options.Http.Timeout;
-            UserAgent(client, options);
+            Configure(client, options);
         });
         services.AddHttpClient(SsfReceiverDefaults.PollHttpClientName).ConfigureHttpClient((provider, client) =>
         {
@@ -96,7 +96,7 @@ public static class SsfReceiverServiceCollectionExtensions
                 timeout = (needed > timeout) ? needed : timeout;
             }
             client.Timeout = timeout;
-            UserAgent(client, options);
+            Configure(client, options);
         });
         marker.TryAddDefaultStore<ISsfJtiDedupStore>(services, provider =>
         {
@@ -251,8 +251,15 @@ public static class SsfReceiverServiceCollectionExtensions
         }
     }
 
-    private static void UserAgent(HttpClient client, SsfReceiverOptions options)
+    private static void Configure(HttpClient client, SsfReceiverOptions options)
     {
+        // every call of the receiver buffers the response (HttpCompletionOption.ResponseContentRead),
+        // so the limit applies to all of them. A value out of range is left to the validator, whose
+        // message names the setting, rather than failing here
+        if (options.Http.MaxResponseSize is > 0 and <= int.MaxValue)
+        {
+            client.MaxResponseContentBufferSize = options.Http.MaxResponseSize;
+        }
         if (!string.IsNullOrWhiteSpace(options.Http.UserAgent)
                 && ProductInfoHeaderValue.TryParse(options.Http.UserAgent, out ProductInfoHeaderValue? userAgent))
         {
