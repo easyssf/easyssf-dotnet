@@ -131,6 +131,31 @@ public class SsfReceiverOptionsValidatorTests
     }
 
     [Fact]
+    public void PollEndpointWithoutTlsIsRefusedUnlessInsecureHttpIsAllowed()
+    {
+        // the access token is sent to the poll endpoint
+        AssertFails(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.DeliveryMethod = SsfDeliveryMethod.Poll;
+            options.Poll.EndpointUrl = new Uri("http://idp.example/realms/test/poll");
+        }, "EasySsf:Receiver:Poll:EndpointUrl", "must use https");
+        Assert.True(Validate(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.DeliveryMethod = SsfDeliveryMethod.Poll;
+            options.Poll.EndpointUrl = new Uri("http://idp.example/realms/test/poll");
+            options.AllowInsecureHttp = true;
+        }).Succeeded);
+        Assert.True(Validate(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.DeliveryMethod = SsfDeliveryMethod.Poll;
+            options.Poll.EndpointUrl = new Uri("http://localhost:8080/realms/test/poll");
+        }).Succeeded);
+    }
+
+    [Fact]
     public void PushStreamManagedByReceiverNeedsDeliveryEndpointUrl()
     {
         AssertFails(options =>

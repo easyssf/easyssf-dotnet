@@ -137,6 +137,69 @@ public sealed class SsfPollerTests : IClassFixture<TestTransmitter>, IDisposable
     }
 
     [Fact]
+    public async Task ReportsSetWhoseJtiDiffersFromTheKeyItIsListedUnderWithoutHandlingIt()
+    {
+        JsonObject claims = _transmitter.SetClaims("CaepSessionRevoked", Opaque("session-1"));
+        _transmitter.QueueSet("other-jti", _transmitter.SignSet(claims));
+        string valid = Queue("session-2");
+
+        Assert.Equal(2, await _poller.PollNowAsync());
+
+        // the SET is not handled, and the error names the key so that the transmitter drops it
+        Assert.Equal([valid], _handled);
+        Assert.Equal([valid], _transmitter.AcknowledgedSets);
+        Assert.Equal(["other-jti"], _transmitter.ReportedErrors.Keys);
+        JsonNode error = _transmitter.ReportedErrors["other-jti"]!;
+        Assert.Equal("invalid_request", error["err"]!.GetValue<string>());
+        Assert.Contains(claims["jti"]!.GetValue<string>(), error["description"]!.GetValue<string>());
+        Assert.Contains("other-jti", error["description"]!.GetValue<string>());
+        Assert.Equal(1, _metrics.Sets.Count(s => s.Delivery == SsfDeliveryMethod.Poll && s.Outcome == SsfSetOutcome.Invalid));
+    }
+
+    [Fact]
+    public async Task DoesNotSendTheAccessTokenToAPollEndpointWithoutTls()
+    {
+        // the in-process transmitter answers on any scheme and host, so a request that went out
+        // would be counted
+        Uri insecureEndpoint = new(_transmitter.PollUri.Replace("https://", "http://", StringComparison.Ordinal));
+        SsfPoller insecure = Poller(() => insecureEndpoint, TestTransmitter.DefaultAccessToken);
+        ArgumentException ex = await Assert.ThrowsAnyAsync<ArgumentException>(() => insecure.PollNowAsync());
+        Assert.Contains("poll endpoint", ex.Message);
+        Assert.Contains("must use https", ex.Message);
+        Assert.Equal(0, _transmitter.PollRequests);
+        Assert.Contains("must use https", insecure.LastPollError);
+
+        // the insecure policy lets it through
+        insecure.Options.UriPolicy = SsfTransmitterUriPolicy.Insecure;
+        Assert.Equal(0, await insecure.PollNowAsync());
+        Assert.Equal(1, _transmitter.PollRequests);
+    }
+
+    [Fact]
+    public async Task DoesNotFlushAcknowledgementsOnStopToAPollEndpointWithoutTls()
+    {
+        // the endpoint moves to a host without TLS while acknowledgements are pending, as a changed
+        // stream configuration could make it
+        Uri endpoint = new(_transmitter.PollUri);
+        InMemorySsfPollAckStore acks = new();
+        SsfPoller poller = Poller(() => endpoint, TestTransmitter.DefaultAccessToken, options =>
+        {
+            options.AckStore = acks;
+            options.InitialDelay = TimeSpan.FromHours(1);
+        });
+        poller.Start();
+        Uri insecureEndpoint = new(_transmitter.PollUri.Replace("https://", "http://", StringComparison.Ordinal));
+        endpoint = insecureEndpoint;
+        await acks.RecordAsync(insecureEndpoint.ToString(), SsfPendingAck.Ack("jti-1"));
+        Assert.Equal(1, await poller.GetPendingAckCountAsync());
+
+        await poller.StopAsync();
+
+        Assert.Equal(0, _transmitter.PollRequests);
+        Assert.Equal(1, await acks.CountAsync(insecureEndpoint.ToString()));
+    }
+
+    [Fact]
     public async Task DoesNotAcknowledgeSetThatCouldNotBeHandledSoThatItIsDeliveredAgain()
     {
         string jti = Queue("session-1");

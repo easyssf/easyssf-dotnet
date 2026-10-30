@@ -1,4 +1,5 @@
 using EasySsf.Receiver.Metrics;
+using EasySsf.Receiver.Transmitter;
 
 namespace EasySsf.Receiver.Poll;
 
@@ -83,6 +84,14 @@ public sealed class SsfPollerOptions
     public TimeSpan MaxPause { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// What the poll endpoint must look like before the access token is sent to it,
+    /// <see cref="SsfTransmitterUriPolicy.Default"/> unless set: <c>https</c>, or <c>http</c> on
+    /// loopback addresses only. <see cref="SsfTransmitterUriPolicy.Insecure"/> for a transmitter
+    /// without TLS in a test setup.
+    /// </summary>
+    public SsfTransmitterUriPolicy UriPolicy { get; set; } = SsfTransmitterUriPolicy.Default;
+
+    /// <summary>
     /// The clock the poller paces itself by.
     /// </summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
@@ -92,6 +101,7 @@ public sealed class SsfPollerOptions
         ArgumentNullException.ThrowIfNull(AckStore, nameof(AckStore));
         ArgumentNullException.ThrowIfNull(Metrics, nameof(Metrics));
         ArgumentNullException.ThrowIfNull(TimeProvider, nameof(TimeProvider));
+        ArgumentNullException.ThrowIfNull(UriPolicy, nameof(UriPolicy));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(MaxAckBatch, 0, nameof(MaxAckBatch));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(MaxEvents, 0, nameof(MaxEvents));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(Interval, TimeSpan.Zero, nameof(Interval));
