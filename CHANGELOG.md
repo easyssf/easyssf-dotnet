@@ -17,6 +17,16 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+A release of hardening, matching easyssf for Java 0.7.0. The poll endpoint is held to the URI
+policy of the transmitter's metadata endpoints before the access token goes to it, responses from
+the transmitter are bounded, 4 MiB by default, and every stream configuration the transmitter
+returns has its issuer checked, not only a created one. Stopping and starting the stream registrar
+again no longer leaves a stream behind or deletes the wrong one. Java's fixes for a host name like
+`127.attacker.example` passing for loopback and for the pending-acks gauge turning `NaN` needed no
+counterpart: neither bug occurs in .NET.
+
 ### Security
 
 - The poll endpoint is held to the URI policy of the transmitter's metadata endpoints before the
@@ -114,6 +124,7 @@ an in-process test transmitter. Six packages under the reserved prefix `EasySsf`
   conformance suite with push and poll delivery. Both are built with the solution and not
   published.
 
-[Unreleased]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/easyssf/easyssf-dotnet/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/easyssf/easyssf-dotnet/compare/v0.6.0-alpha.1...v0.6.0
 [0.6.0-alpha.1]: https://github.com/easyssf/easyssf-dotnet/releases/tag/v0.6.0-alpha.1

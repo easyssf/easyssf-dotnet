@@ -16,6 +16,9 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     /// <summary>how long StopAsync() waits for a registration that does not end, shortened</summary>
     private static readonly TimeSpan StopTimeout = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>how early a timer may fire relative to the stopwatch, generously</summary>
+    private static readonly TimeSpan TimerResolution = TimeSpan.FromMilliseconds(50);
+
     private readonly List<HttpClient> _clients = [];
 
     private readonly TestTransmitter _transmitter;
@@ -389,7 +392,11 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
         // one, which finds the stream the first created and adopts it
         long stopping = TimeProvider.System.GetTimestamp();
         await registrar.StopAsync();
-        Assert.True(TimeProvider.System.GetElapsedTime(stopping) >= StopTimeout);
+        // StopAsync() waited for the registration, give or take the resolution of the timer, which
+        // may fire a little before the stopwatch measures the full timeout (seen on a CI runner)
+        Assert.True(TimeProvider.System.GetElapsedTime(stopping) >= StopTimeout - TimerResolution);
+        Assert.False(registrar.IsRunning);
+        Assert.Empty(registered);
         registrar.Start();
         await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
         Assert.Equal(streamId, _receiverStream.StreamId);
