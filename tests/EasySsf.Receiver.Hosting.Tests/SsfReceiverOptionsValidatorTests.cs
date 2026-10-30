@@ -73,6 +73,21 @@ public class SsfReceiverOptionsValidatorTests
     }
 
     [Fact]
+    public void FailsWithAMaxResponseSizeHttpClientCannotTake()
+    {
+        AssertFails(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.Http.MaxResponseSize = 0;
+        }, "EasySsf:Receiver:Http:MaxResponseSize");
+        AssertFails(options =>
+        {
+            options.TransmitterIssuer = "https://idp.example";
+            options.Http.MaxResponseSize = int.MaxValue + 1L;
+        }, "EasySsf:Receiver:Http:MaxResponseSize");
+    }
+
+    [Fact]
     public void FailsWithTwoTransmittersWithTheSameIssuer()
     {
         AssertFails(options =>

@@ -287,6 +287,7 @@ it.
 | `EventAliases:<alias>` | | Aliases for event type URIs, e.g. `"AcmeLogin": "https://events.acme.example/login"`, usable wherever an event type is named. |
 | `Http:Timeout` | `00:00:05` | Timeout for calls to the transmitter; a long poll waits its hold time plus a margin regardless. |
 | `Http:UserAgent` | | `User-Agent` header for calls to the transmitter. |
+| `Http:MaxResponseSize` | `4194304` (4 MiB) | Largest response body accepted from the transmitter, in bytes (metadata, JWK Set, token, stream configuration, poll response); a larger one fails the call as if the transmitter were unavailable. |
 | `TransmitterAccessToken` | | Static access token for stream management and polling. |
 | `OAuth2:TokenUri` | | Token endpoint for the client credentials grant. |
 | `OAuth2:ClientId` / `ClientSecret` | | |
@@ -376,7 +377,7 @@ options.ExpectedAudiences.Add("https://my-app.example");
 ISsfSetVerifier verifier = new JwtSsfSetVerifier(
     issuer: "https://idp.example/realms/demo",
     jwkSetUri: new Uri("https://idp.example/realms/demo/protocol/openid-connect/certs"),
-    httpClient: new HttpClient(),
+    httpClient: new HttpClient { MaxResponseContentBufferSize = 4 * 1024 * 1024 },
     options);
 
 try
@@ -448,7 +449,8 @@ transmitter declares and the stream verification hook.
 For a receiver that polls, `SsfTransmitterBuilder` assembles the parts for one transmitter and
 `SsfTransmitter.Start()` runs them in the background: the registrar registers the stream, the
 poller fetches as soon as the stream is known. An `HttpClient` with a long enough timeout serves
-them all.
+them all; bound its `MaxResponseContentBufferSize` as well (the hosting integration sets 4 MiB),
+as it buffers up to 2 GiB of whatever the transmitter sends by default.
 
 ```csharp
 using EasySsf.Core.Stream;
@@ -457,7 +459,7 @@ using EasySsf.Receiver.Set;
 using EasySsf.Receiver.Stream;
 using EasySsf.Receiver.Transmitter;
 
-HttpClient http = new() { Timeout = TimeSpan.FromMinutes(2) };
+HttpClient http = new() { Timeout = TimeSpan.FromMinutes(2), MaxResponseContentBufferSize = 4 * 1024 * 1024 };
 string issuer = "https://idp.example/realms/demo";
 SsfTransmitterMetadataResolver metadata = new(issuer, null, http);
 ClientCredentialsSsfTransmitterTokenProvider tokens = new(http,

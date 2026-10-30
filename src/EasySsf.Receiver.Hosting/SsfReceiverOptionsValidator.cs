@@ -62,6 +62,12 @@ public sealed class SsfReceiverOptionsValidator : IValidateOptions<SsfReceiverOp
         {
             failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Http:Timeout: must be positive");
         }
+        if (options.Http.MaxResponseSize <= 0 || options.Http.MaxResponseSize > int.MaxValue)
+        {
+            // HttpClient buffers at most int.MaxValue bytes
+            failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Http:MaxResponseSize: must be positive and at most {int.MaxValue}"
+                + $" (value: {options.Http.MaxResponseSize})");
+        }
         if (options.Revocation.Ttl <= TimeSpan.Zero)
         {
             failures.Add($"{SsfReceiverDefaults.ConfigurationSection}:Revocation:Ttl: must be positive");
