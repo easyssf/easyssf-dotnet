@@ -161,6 +161,15 @@ The hosted service registers the stream and starts polling when the host starts,
 what it owes the transmitter when the host stops. The audience of the stream is learned from the
 registration, so `ExpectedAudience` is not needed.
 
+- **Several instances** register under the same credentials and reuse the one stream, as the
+  registrar finds it on startup. Several instances that start at the same time against a transmitter
+  with no stream yet may each create one, unless the transmitter allows a single stream per receiver
+  (Keycloak does); every event is then delivered once per stream, with a `jti` of its own, which the
+  dedup store cannot tell apart. Start one instance first, or let the transmitter manage the stream.
+- **`Stream:DeleteOnShutdown` is for a single instance**: the stream is shared, so the first instance
+  to stop deletes it for the others, and the next one to start creates a new stream with a new
+  audience.
+
 Several transmitters go under `EasySsf:Receiver:Transmitters:<name>`, each with the same settings;
 the one at `EasySsf:Receiver` is named `default`. SETs are verified by the transmitter that issued
 them, and each transmitter authenticates at the push endpoint with its own header. A customizer
@@ -299,7 +308,7 @@ it.
 | `Stream:Id` | | Stream created at the transmitter, looked up on startup. |
 | `Stream:EventsRequested` | `CaepSessionRevoked`, `CaepCredentialChange` | For a stream managed by the receiver. |
 | `Stream:Description` | | For a stream managed by the receiver. |
-| `Stream:DeleteOnShutdown` | `false` | For a stream managed by the receiver. |
+| `Stream:DeleteOnShutdown` | `false` | For a stream managed by the receiver. Single instance only: the stream is shared, see [Getting started](#getting-started). |
 | `Poll:EndpointUrl` | from the stream | Held to the same `https` rule as the transmitter issuer, as the access token is sent to it. |
 | `Poll:AutoStartup` | `true` | Otherwise the application polls by calling `SsfPoller.PollNowAsync()`. |
 | `Poll:Interval` | `00:00:30` | |

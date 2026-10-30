@@ -40,13 +40,48 @@ public sealed class SsfStreamRegistrar : IDisposable
 
     private readonly List<Action<SsfStreamConfiguration>> _listeners = [];
 
-    private readonly Lock _lifecycle = new();
+    /// <summary>Start() and StopAsync() are idempotent and safe to call from any thread</summary>
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
+
+    /// <summary>
+    /// Guards <see cref="_current"/> and the publication of a registration: StopAsync() takes the
+    /// run away under it, the registration checks that it is still the current run and publishes
+    /// under it, so a registration either publishes before StopAsync() proceeds or not at all. A
+    /// lock of its own, as StopAsync() must not hold it while it waits for the registration.
+    /// </summary>
+    private readonly Lock _publication = new();
+
+    /// <summary>
+    /// Streams created by registrations that outlived their StopAsync() while another registration
+    /// had already started, and so could not publish them. The registration that follows adopts
+    /// such a stream if it finds it, and deletes it once it publishes another; StopAsync() deletes
+    /// what is left. Guarded by <see cref="_publication"/>.
+    /// </summary>
+    private readonly List<string> _unadoptedStreams = [];
+
+    /// <summary>
+    /// Streams whose deletion is under way, marked under <see cref="_publication"/> before the lock
+    /// is released for the call: a registration does not adopt one of them, a slow delete would
+    /// otherwise remove the stream a registration that followed uses.
+    /// </summary>
+    private readonly HashSet<string> _deletingStreams = new(StringComparer.Ordinal);
 
     private TimeSpan _initialRetryDelay = TimeSpan.FromSeconds(1);
 
-    private CancellationTokenSource? _stopping;
+    private TimeSpan _stopTimeout = TimeSpan.FromSeconds(5);
 
-    private Task? _registration;
+    /// <summary>
+    /// The current registration; a registration that finds another run here, or none, was stopped
+    /// and publishes nothing. Written under <see cref="_publication"/>.
+    /// </summary>
+    private volatile Run? _current;
+
+    /// <summary>
+    /// The run that published the stream the receiver has, <see langword="null"/> once StopAsync()
+    /// ran: tells a registration that outlived its StopAsync() whether the one that followed has
+    /// published yet. Guarded by <see cref="_publication"/>.
+    /// </summary>
+    private Run? _publishedBy;
 
     private volatile SsfStreamRegistrarState _state = SsfStreamRegistrarState.NotStarted;
 
@@ -110,6 +145,18 @@ public sealed class SsfStreamRegistrar : IDisposable
     }
 
     /// <summary>
+    /// How long <see cref="StopAsync"/> waits for a registration in flight, 5 seconds by default. A
+    /// registration that takes longer, because its <c>HttpMessageHandler</c> does not observe the
+    /// cancellation, is left to finish on its own and publishes nothing.
+    /// </summary>
+    public TimeSpan StopTimeout
+    {
+        get => _stopTimeout;
+        set => _stopTimeout = (value > TimeSpan.Zero) ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "StopTimeout must be positive");
+    }
+
+    /// <summary>
     /// Where the registration stands.
     /// </summary>
     public SsfStreamRegistrarState State => _state;
@@ -123,7 +170,7 @@ public sealed class SsfStreamRegistrar : IDisposable
     /// <summary>
     /// Whether <see cref="Start"/> was called and <see cref="StopAsync"/> was not.
     /// </summary>
-    public bool IsRunning => _stopping is not null;
+    public bool IsRunning => _current is not null;
 
     /// <summary>
     /// Adds a listener that is told whenever <see cref="RegisterAsync"/> succeeded, on the thread
@@ -140,104 +187,178 @@ public sealed class SsfStreamRegistrar : IDisposable
     }
 
     /// <summary>
-    /// Starts looking up or registering the stream in the background.
+    /// Starts looking up or registering the stream in the background. Calling it again while a
+    /// registration runs has no effect.
     /// </summary>
     public void Start()
     {
-        lock (_lifecycle)
+        _lifecycle.Wait();
+        try
         {
-            if (_stopping is not null)
+            if (_current is not null)
             {
                 return;
             }
             _state = SsfStreamRegistrarState.Registering;
-            CancellationTokenSource stopping = new();
-            _stopping = stopping;
-            // the token is read here, not on the pool thread: StopAsync may dispose the source
-            // before the task gets to run
-            CancellationToken token = stopping.Token;
-            _registration = Task.Run(() => RegisterWithRetriesAsync(token), CancellationToken.None);
+            Run run = new();
+            lock (_publication)
+            {
+                _current = run;
+            }
+            // the token is read here, not on the pool thread: the run's source outlives it
+            CancellationToken token = run.Stopping.Token;
+            run.Task = Task.Run(() => RegisterWithRetriesAsync(run, token), CancellationToken.None);
+        }
+        finally
+        {
+            _lifecycle.Release();
         }
     }
 
     /// <summary>
-    /// Stops the background registration and deletes the stream if asked to.
+    /// Stops the background registration and deletes the stream if asked to. Only a stream
+    /// published since the last stop is deleted: the receiver keeps the stream after the stop, and
+    /// it is not deleted twice.
     /// </summary>
     /// <seealso cref="DeleteOnShutdown"/>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        CancellationTokenSource? stopping;
-        Task? registration;
-        lock (_lifecycle)
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            stopping = _stopping;
-            registration = _registration;
-            _stopping = null;
-            _registration = null;
+            Run? run;
+            bool published;
+            List<string> unadopted;
+            // a publication in progress completes first, so that the stream it publishes is the one
+            // deleted below; none starts afterwards
+            lock (_publication)
+            {
+                run = _current;
+                _current = null;
+                published = _publishedBy is not null;
+                _publishedBy = null;
+                unadopted = [.. _unadoptedStreams];
+                _unadoptedStreams.Clear();
+                _deletingStreams.UnionWith(unadopted);
+            }
+            if (run is not null)
+            {
+                await run.Stopping.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    // a registration in flight ends with the cancelled call; one that completes
+                    // regardless sees it is no longer current and publishes nothing
+                    await run.Task!.WaitAsync(_stopTimeout, cancellationToken).ConfigureAwait(false);
+                    run.Stopping.Dispose();
+                }
+                catch (TimeoutException)
+                {
+                    // the source stays undisposed, the registration still holds its token
+                    _logger.LogWarning("The registration of the SSF stream is still in progress");
+                }
+            }
+            string? registeredStreamId = _receiverStream.StreamId;
+            if (DeleteOnShutdown && _desiredStream is not null && published && registeredStreamId is not null)
+            {
+                try
+                {
+                    await _streamClient.DeleteStreamAsync(registeredStreamId, cancellationToken).ConfigureAwait(false);
+                    _logger.LogInformation("Deleted SSF stream {StreamId}", registeredStreamId);
+                }
+                catch (SsfStreamException ex)
+                {
+                    _logger.LogWarning("Could not delete SSF stream {StreamId}: {Reason}", registeredStreamId, ex.Message);
+                }
+            }
+            await DeleteOrphansAsync(unadopted).ConfigureAwait(false);
         }
-        if (stopping is not null)
+        finally
         {
-            await stopping.CancelAsync().ConfigureAwait(false);
-            stopping.Dispose();
-        }
-        if (registration is not null)
-        {
-            try
-            {
-                await registration.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // the registration was cancelled
-            }
-            catch (TimeoutException)
-            {
-                _logger.LogDebug("The SSF stream registration did not end within 5 seconds");
-            }
-        }
-        string? registeredStreamId = _receiverStream.StreamId;
-        if (DeleteOnShutdown && _desiredStream is not null && registeredStreamId is not null)
-        {
-            try
-            {
-                await _streamClient.DeleteStreamAsync(registeredStreamId, cancellationToken).ConfigureAwait(false);
-                _logger.LogInformation("Deleted SSF stream {StreamId}", registeredStreamId);
-            }
-            catch (SsfStreamException ex)
-            {
-                _logger.LogWarning("Could not delete SSF stream {StreamId}: {Reason}", registeredStreamId, ex.Message);
-            }
+            _lifecycle.Release();
         }
     }
 
-    private async Task RegisterWithRetriesAsync(CancellationToken cancellationToken)
+    private async Task RegisterWithRetriesAsync(Run run, CancellationToken cancellationToken)
     {
         TimeSpan delay = _initialRetryDelay;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await RegisterAsync(cancellationToken).ConfigureAwait(false);
+                Registration registration = await LookUpAsync(cancellationToken).ConfigureAwait(false);
+                // decided under the lock, deleted after it: a slow transmitter must not hold up
+                // StopAsync()
+                List<string> orphans = [];
+                lock (_publication)
+                {
+                    if (_current == run)
+                    {
+                        orphans = Publish(registration, run);
+                    }
+                    else if (_current is null)
+                    {
+                        // stopped while the transmitter was called: the result is not published,
+                        // and a stream created on the way is not left behind
+                        if (registration.Created && DeleteOnShutdown)
+                        {
+                            orphans.Add(registration.Stream.StreamId!);
+                        }
+                    }
+                    else if (registration.Created && DeleteOnShutdown)
+                    {
+                        // stopped and started again while the transmitter was called, because
+                        // StopAsync() gave up waiting: the registration that followed adopts the
+                        // stream created on the way if it finds it, so it is not deleted on the
+                        // spot. Once the other has published, the stream it uses is known: any
+                        // other is an orphan.
+                        string streamId = registration.Stream.StreamId!;
+                        if (_publishedBy != _current)
+                        {
+                            // the other has not published yet, it decides on publishing
+                            _unadoptedStreams.Add(streamId);
+                            _logger.LogDebug("A registration that outlived its stop leaves SSF stream {StreamId} to the one that followed",
+                                streamId);
+                        }
+                        else if (streamId != _receiverStream.StreamId)
+                        {
+                            orphans.Add(streamId);
+                        }
+                    }
+                    _deletingStreams.UnionWith(orphans);
+                }
+                await DeleteOrphansAsync(orphans).ConfigureAwait(false);
+                return;
+            }
+            catch (SsfStreamIssuerMismatchException ex)
+            {
+                // trying again would only find or create the same stream
+                lock (_publication)
+                {
+                    if (_current == run)
+                    {
+                        _logger.LogError("Not using the SSF stream: {Reason}", ex.Message);
+                        _lastError = ex.Message;
+                        _state = SsfStreamRegistrarState.Failed;
+                    }
+                }
                 return;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-            catch (SsfStreamIssuerMismatchException ex)
-            {
-                // trying again would only find or create the same stream
-                _logger.LogError("Not using the SSF stream: {Reason}", ex.Message);
-                _lastError = ex.Message;
-                _state = SsfStreamRegistrarState.Failed;
-                return;
-            }
             catch (Exception ex)
             {
-                _lastError = ex.Message;
-                if (cancellationToken.IsCancellationRequested)
+                // the check and the report go together under the lock, so that a registration
+                // stopped meanwhile, possibly replaced, reports no error of its own over the one
+                // that followed
+                lock (_publication)
                 {
-                    return;
+                    if (_current != run)
+                    {
+                        return;
+                    }
+                    _lastError = ex.Message;
                 }
                 _logger.LogWarning("Could not set up the SSF stream, trying again in {Delay}s: {Reason}", (int)delay.TotalSeconds, ex.Message);
                 _logger.LogDebug(ex, "Cause of the failed SSF stream setup");
@@ -255,7 +376,7 @@ public sealed class SsfStreamRegistrar : IDisposable
     }
 
     /// <summary>
-    /// Looks up or registers the stream once.
+    /// Looks up or registers the stream once, on the calling thread, and publishes it.
     /// </summary>
     /// <returns>the stream</returns>
     /// <exception cref="SsfStreamException">if the transmitter could not be called</exception>
@@ -265,52 +386,77 @@ public sealed class SsfStreamRegistrar : IDisposable
     /// </exception>
     public async Task<SsfStreamConfiguration> RegisterAsync(CancellationToken cancellationToken = default)
     {
-        SsfStreamConfiguration stream;
-        string action;
+        Registration registration = await LookUpAsync(cancellationToken).ConfigureAwait(false);
+        List<string> orphans;
+        lock (_publication)
+        {
+            orphans = Publish(registration, Run.Direct);
+        }
+        await DeleteOrphansAsync(orphans).ConfigureAwait(false);
+        return registration.Stream;
+    }
+
+    private async Task<Registration> LookUpAsync(CancellationToken cancellationToken)
+    {
         if (_desiredStream is null)
         {
-            stream = await _streamClient.GetStreamAsync(_streamId!, cancellationToken).ConfigureAwait(false);
-            action = "Using";
+            return new Registration(await _streamClient.GetStreamAsync(_streamId!, cancellationToken).ConfigureAwait(false), "Using", false);
         }
-        else
+        IReadOnlyList<SsfStreamConfiguration> streams = await _streamClient.GetStreamsAsync(cancellationToken).ConfigureAwait(false);
+        HashSet<string> deleting = DeletingStreams();
+        SsfStreamConfiguration? existing = streams
+            .Where(stream => stream.StreamId is null || !deleting.Contains(stream.StreamId))
+            .FirstOrDefault(HasDesiredDelivery);
+        if (existing is not null && HasDesiredEvents(existing))
         {
-            IReadOnlyList<SsfStreamConfiguration> streams = await _streamClient.GetStreamsAsync(cancellationToken).ConfigureAwait(false);
-            SsfStreamConfiguration? existing = streams.FirstOrDefault(HasDesiredDelivery);
-            if (existing is not null && HasDesiredEvents(existing))
-            {
-                stream = existing;
-                action = "Using existing";
-            }
-            else if (existing is not null)
-            {
-                stream = await _streamClient.UpdateStreamAsync(existing.StreamId!, Changes(), cancellationToken).ConfigureAwait(false);
-                action = "Updated";
-            }
-            else
-            {
-                try
-                {
-                    stream = await _streamClient.CreateStreamAsync(_desiredStream, cancellationToken).ConfigureAwait(false);
-                    action = "Created";
-                }
-                catch (SsfStreamIssuerMismatchException ex)
-                {
-                    // the stream was created but must not be used, and trying again would only
-                    // create another one
-                    await DeleteQuietlyAsync(ex.Stream.StreamId, cancellationToken).ConfigureAwait(false);
-                    throw;
-                }
-                catch (SsfStreamException ex) when (ex.StatusCode == 409 && streams.Count == 1)
-                {
-                    // the transmitter allows a single stream per receiver and it is configured differently
-                    stream = await _streamClient.UpdateStreamAsync(streams[0].StreamId!, Changes(), cancellationToken).ConfigureAwait(false);
-                    action = "Updated";
-                }
-            }
+            return new Registration(existing, "Using existing", false);
+        }
+        if (existing is not null)
+        {
+            return new Registration(await _streamClient.UpdateStreamAsync(existing.StreamId!, Changes(), cancellationToken).ConfigureAwait(false),
+                "Updated", false);
+        }
+        try
+        {
+            return new Registration(await _streamClient.CreateStreamAsync(_desiredStream, cancellationToken).ConfigureAwait(false), "Created", true);
+        }
+        catch (SsfStreamIssuerMismatchException ex)
+        {
+            // the stream was created but must not be used, and trying again would only create
+            // another one
+            await DeleteQuietlyAsync(ex.Stream.StreamId, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        catch (SsfStreamException ex) when (ex.StatusCode == 409 && streams.Count == 1 && !deleting.Contains(streams[0].StreamId ?? ""))
+        {
+            // the transmitter allows a single stream per receiver and it is configured differently
+            return new Registration(await _streamClient.UpdateStreamAsync(streams[0].StreamId!, Changes(), cancellationToken).ConfigureAwait(false),
+                "Updated", false);
+        }
+    }
+
+    /// <summary>
+    /// Publishes the stream and tells the listeners; called under <see cref="_publication"/>.
+    /// </summary>
+    /// <returns>
+    /// the streams of stopped registrations the caller deletes once it no longer holds the lock:
+    /// those not adopted, as the receiver uses this one
+    /// </returns>
+    private List<string> Publish(Registration registration, Run run)
+    {
+        SsfStreamConfiguration stream = registration.Stream;
+        if (stream.StreamId is not null && _deletingStreams.Contains(stream.StreamId))
+        {
+            // found by the look-up before a delete marked it: looked up again
+            throw new SsfStreamException($"SSF stream {stream.StreamId} is being deleted", 0, null);
         }
         _receiverStream.Configuration = stream;
+        _publishedBy = run;
+        List<string> orphans = [.. _unadoptedStreams.Where(unadopted => unadopted != stream.StreamId)];
+        _unadoptedStreams.Clear();
+        _deletingStreams.UnionWith(orphans);
         _logger.LogInformation("{Action} SSF stream {StreamId} (delivery {Method} {Endpoint}, events {Events}, audience {Audience})",
-            action, stream.StreamId, stream.DeliveryMethod, stream.DeliveryEndpointUrl?.ToString() ?? "",
+            registration.Action, stream.StreamId, stream.DeliveryMethod, stream.DeliveryEndpointUrl?.ToString() ?? "",
             string.Join(", ", stream.EventsDelivered.Select(SsfEventTypes.AliasOf)), string.Join(", ", stream.Audience));
         _lastError = null;
         _state = SsfStreamRegistrarState.Registered;
@@ -331,7 +477,41 @@ public sealed class SsfStreamRegistrar : IDisposable
                 _logger.LogDebug(ex, "Cause of the failed listener");
             }
         }
-        return stream;
+        return orphans;
+    }
+
+    /// <summary>
+    /// Deletes streams that registrations created and the receiver does not use; called without
+    /// the <see cref="_publication"/> lock, as the transmitter may be slow, and not cancelled by the
+    /// stop of the registration that found them, as they would be left behind.
+    /// </summary>
+    private async Task DeleteOrphansAsync(List<string> orphans)
+    {
+        foreach (string streamId in orphans)
+        {
+            _logger.LogInformation("Deleting SSF stream {StreamId}, created by a registration that was stopped before it could publish it",
+                streamId);
+            try
+            {
+                await DeleteQuietlyAsync(streamId, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_publication)
+                {
+                    _deletingStreams.Remove(streamId);
+                }
+            }
+        }
+    }
+
+    /// <returns>the streams a delete is under way for, to leave them out of a look-up</returns>
+    private HashSet<string> DeletingStreams()
+    {
+        lock (_publication)
+        {
+            return new HashSet<string>(_deletingStreams, StringComparer.Ordinal);
+        }
     }
 
     private async Task DeleteQuietlyAsync(string? streamId, CancellationToken cancellationToken)
@@ -391,6 +571,27 @@ public sealed class SsfStreamRegistrar : IDisposable
 
     public void Dispose()
     {
-        _stopping?.Dispose();
+        Run? run = _current;
+        run?.Stopping.Dispose();
+        _lifecycle.Dispose();
     }
+
+    /// <summary>
+    /// One registration started by <see cref="Start"/>; its identity tells whether it is still the
+    /// current one.
+    /// </summary>
+    private sealed class Run
+    {
+        /// <summary>stands for a direct call of <see cref="RegisterAsync"/></summary>
+        public static readonly Run Direct = new();
+
+        public CancellationTokenSource Stopping { get; } = new();
+
+        public Task? Task { get; set; }
+    }
+
+    /// <summary>
+    /// The outcome of a look-up: the stream, and whether it was created on the way.
+    /// </summary>
+    private sealed record Registration(SsfStreamConfiguration Stream, string Action, bool Created);
 }

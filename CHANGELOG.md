@@ -43,6 +43,15 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
 - A SET the poll response lists under a key other than its `jti` (RFC 8936, section 2.4) is reported
   to the transmitter as `invalid_request` under that key instead of being handled and acknowledged
   under a key that is not its own. New API: `SsfSetClaims.UnverifiedJti`.
+- `SsfStreamRegistrar.StopAsync()` and `Start()` no longer leave a stream behind or delete the wrong
+  one. A registration that completes after `StopAsync()`, because its `HttpMessageHandler` did not
+  observe the cancellation, publishes nothing and deletes a stream it created on the way if the
+  registrar deletes on shutdown; if the registrar was started again meanwhile, it leaves that stream
+  to the new registration, which adopts it if it finds it and deletes it once it publishes another
+  one; a stream whose deletion is under way is not adopted. A publication in progress completes
+  before `StopAsync()` goes on, and `StopAsync()` deletes only a stream published since the last
+  stop, not again the one a previous stop deleted. `StopAsync()` logs a warning when the
+  registration is still running after `StopTimeout` (new, 5 seconds by default).
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the
