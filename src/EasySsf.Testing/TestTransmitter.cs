@@ -132,6 +132,12 @@ public sealed class TestTransmitter : IDisposable
     public string? StreamIssuer { get; set; }
 
     /// <summary>
+    /// Lets the transmitter create a stream per request. By default it allows one stream per
+    /// receiver and answers a second create request with <c>409</c>, as Keycloak does.
+    /// </summary>
+    public bool SeveralStreamsAllowed { get; set; }
+
+    /// <summary>
     /// How long a poll request without <c>returnImmediately: true</c> is held while no SET is
     /// queued. Zero by default: the transmitter then answers at once, as if it did not support long
     /// polling.
@@ -331,6 +337,7 @@ public sealed class TestTransmitter : IDisposable
         Available = true;
         _validAccessToken = DefaultAccessToken;
         StreamIssuer = null;
+        SeveralStreamsAllowed = false;
     }
 
     /// <summary>
@@ -679,7 +686,7 @@ public sealed class TestTransmitter : IDisposable
             }
             if (method == HttpMethod.Post)
             {
-                if (_streams.Count > 0)
+                if (_streams.Count > 0 && !SeveralStreamsAllowed)
                 {
                     return Respond(HttpStatusCode.Conflict, new JsonObject
                     {

@@ -13,6 +13,11 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
 {
     private static readonly Uri PushEndpoint = new("https://receiver.example/ssf/push");
 
+    /// <summary>how long StopAsync() waits for a registration that does not end, shortened</summary>
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromMilliseconds(200);
+
+    private readonly List<HttpClient> _clients = [];
+
     private readonly TestTransmitter _transmitter;
 
     private readonly HttpClient _http;
@@ -36,6 +41,10 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     public void Dispose()
     {
         _tokenProvider.Dispose();
+        foreach (HttpClient client in _clients)
+        {
+            client.Dispose();
+        }
         _http.Dispose();
     }
 
@@ -210,6 +219,436 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     }
 
     [Fact]
+    public async Task RegistrarStartIsIdempotentAndStopEndsTheRegistration()
+    {
+        _transmitter.Available = false;
+        int calls = 0;
+        int inFlight = 0;
+        int maxInFlight = 0;
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            Interlocked.Increment(ref calls);
+            int now = Interlocked.Increment(ref inFlight);
+            InterlockedMax(ref maxInFlight, now);
+            try
+            {
+                // long enough for the calls of a second registration to overlap
+                await Task.Delay(30);
+                return await send();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref inFlight);
+            }
+        });
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.InitialRetryDelay = TimeSpan.FromMilliseconds(20);
+        registrar.Start();
+        registrar.Start();
+        Assert.True(registrar.IsRunning);
+        await Eventually.UntilAsync(() => Volatile.Read(ref calls) >= 3);
+        // the retries all come from the one registration
+        Assert.Equal(1, Volatile.Read(ref maxInFlight));
+
+        await registrar.StopAsync();
+        await registrar.StopAsync();
+        Assert.False(registrar.IsRunning);
+        int callsAtStop = Volatile.Read(ref calls);
+        await Eventually.DuringAsync(() => Volatile.Read(ref calls) == callsAtStop, TimeSpan.FromMilliseconds(200));
+        Assert.Null(_receiverStream.StreamId);
+    }
+
+    [Fact]
+    public async Task StopDeletesOnlyAStreamPublishedSinceTheLastStop()
+    {
+        int deletes = 0;
+        SsfStreamClient client = InterceptedStreamClient((request, send) =>
+        {
+            if (request.Method == HttpMethod.Delete)
+            {
+                Interlocked.Increment(ref deletes);
+            }
+            return send();
+        });
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.InitialRetryDelay = TimeSpan.FromMilliseconds(20);
+        registrar.Start();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
+        await registrar.StopAsync();
+        Assert.Equal(1, Volatile.Read(ref deletes));
+
+        // the receiver still knows the deleted stream: neither a second stop nor the stop of a
+        // registration that never published deletes it again
+        await registrar.StopAsync();
+        _transmitter.Available = false;
+        registrar.Start();
+        await registrar.StopAsync();
+        Assert.Equal(1, Volatile.Read(ref deletes));
+        Assert.NotNull(_receiverStream.StreamId);
+    }
+
+    [Fact]
+    public async Task RegistrationThatCompletesAfterStopPublishesNothing()
+    {
+        TaskCompletionSource streamsRequested = NewSignal();
+        TaskCompletionSource release = NewSignal();
+        // a handler that does not observe the cancellation of the stop and completes the
+        // registration afterwards
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            if (IsStreams(request) && request.Method == HttpMethod.Get)
+            {
+                streamsRequested.TrySetResult();
+                await release.Task;
+            }
+            return await send();
+        });
+        List<SsfStreamConfiguration> registered = [];
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.AddListener(registered.Add);
+        registrar.Start();
+        await streamsRequested.Task.WaitAsync(Eventually.Default);
+
+        Task stopping = registrar.StopAsync();
+        // StopAsync() waits for the registration, which completes only once released
+        await Eventually.DuringAsync(() => !stopping.IsCompleted, TimeSpan.FromMilliseconds(200));
+        release.SetResult();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // the stream created on the way is deleted, as it would have been on shutdown
+        await Eventually.UntilAsync(() => _transmitter.Streams.Count == 0);
+        Assert.Empty(registered);
+        Assert.Null(_receiverStream.StreamId);
+        Assert.NotEqual(SsfStreamRegistrarState.Registered, registrar.State);
+    }
+
+    [Fact]
+    public async Task StopWaitsForAPublicationInProgressAndDeletesTheStreamItPublished()
+    {
+        TaskCompletionSource publishing = NewSignal();
+        ManualResetEventSlim release = new();
+        List<SsfStreamConfiguration> registered = [];
+        using SsfStreamRegistrar registrar = Registrar(SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.AddListener(stream =>
+        {
+            // the registration passed its check and is publishing when StopAsync() is called
+            registered.Add(stream);
+            publishing.TrySetResult();
+            release.Wait();
+        });
+        registrar.Start();
+        await publishing.Task.WaitAsync(Eventually.Default);
+
+        Task stopping = Task.Run(() => registrar.StopAsync());
+        await Eventually.DuringAsync(() => !stopping.IsCompleted, TimeSpan.FromMilliseconds(200));
+        Assert.Single(_transmitter.Streams);
+        release.Set();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // the publication completed before StopAsync() went on, so the stream it published is the
+        // one StopAsync() deleted
+        Assert.Single(registered);
+        Assert.Equal(registered[0].StreamId, _receiverStream.StreamId);
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
+    public async Task RegistrationThatOutlivesItsStopLeavesTheStreamToTheRegistrationThatFollowed()
+    {
+        TaskCompletionSource created = NewSignal();
+        TaskCompletionSource release = NewSignal();
+        // the transmitter created the stream, but the handler does not return, and does not observe
+        // the cancellation of the stop either
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            HttpResponseMessage response = await send();
+            if (IsStreams(request) && request.Method == HttpMethod.Post)
+            {
+                created.TrySetResult();
+                await release.Task;
+            }
+            return response;
+        });
+        List<SsfStreamConfiguration> registered = [];
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.StopTimeout = StopTimeout;
+        registrar.AddListener(registered.Add);
+        registrar.Start();
+        await created.Task.WaitAsync(Eventually.Default);
+        string streamId = _transmitter.Streams[0]["stream_id"]!.GetValue<string>();
+
+        // StopAsync() gives the first registration up after its timeout, Start() begins a second
+        // one, which finds the stream the first created and adopts it
+        long stopping = TimeProvider.System.GetTimestamp();
+        await registrar.StopAsync();
+        Assert.True(TimeProvider.System.GetElapsedTime(stopping) >= StopTimeout);
+        registrar.Start();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
+        Assert.Equal(streamId, _receiverStream.StreamId);
+
+        // the first registration returns at last: it neither publishes nor deletes the stream the
+        // second one uses
+        release.SetResult();
+        await Eventually.DuringAsync(() => _transmitter.Streams.Count == 1, TimeSpan.FromMilliseconds(300));
+        Assert.Single(registered);
+        Assert.Equal(SsfStreamRegistrarState.Registered, registrar.State);
+
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
+    public async Task RegistrationThatOutlivesItsStopDeletesTheStreamItCreatedAfterTheNextOnePublished()
+    {
+        _transmitter.SeveralStreamsAllowed = true;
+        TaskCompletionSource discovered = NewSignal();
+        TaskCompletionSource release = NewSignal();
+        int creates = 0;
+        // the first registration stalls after it looked for streams and found none, and does not
+        // observe the cancellation of the stop either
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            HttpResponseMessage response = await send();
+            if (IsStreams(request) && request.Method == HttpMethod.Post)
+            {
+                Interlocked.Increment(ref creates);
+            }
+            if (IsStreams(request) && request.Method == HttpMethod.Get && discovered.TrySetResult())
+            {
+                await release.Task;
+            }
+            return response;
+        });
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.StopTimeout = StopTimeout;
+        registrar.Start();
+        await discovered.Task.WaitAsync(Eventually.Default);
+
+        // StopAsync() gives the first registration up, the second finds no stream and creates one
+        await registrar.StopAsync();
+        registrar.Start();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
+        string published = _receiverStream.StreamId!;
+
+        // the first registration goes on to create a stream of its own, which nobody uses
+        release.SetResult();
+        await Eventually.UntilAsync(() => Volatile.Read(ref creates) == 2);
+        await Eventually.UntilAsync(() => _transmitter.Streams.Count == 1);
+        await Eventually.DuringAsync(() => _transmitter.Streams.Count == 1, TimeSpan.FromMilliseconds(300));
+        Assert.Equal(published, _transmitter.Streams[0]["stream_id"]!.GetValue<string>());
+        Assert.Equal(published, _receiverStream.StreamId);
+
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
+    public async Task StreamAStoppedRegistrationLeavesIsAdoptedByTheNextOneAndNotMistakenForAnEarlierOne()
+    {
+        // a first registration published a stream and StopAsync() deleted it; the receiver still
+        // remembers that stream, which must not pass for the one the next registration uses
+        bool stallCreate = false;
+        TaskCompletionSource created = NewSignal();
+        TaskCompletionSource releaseCreate = NewSignal();
+        bool stallDiscovery = false;
+        TaskCompletionSource discovered = NewSignal();
+        TaskCompletionSource releaseDiscovery = NewSignal();
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            HttpResponseMessage response = await send();
+            if (IsStreams(request) && request.Method == HttpMethod.Post && Interlocked.Exchange(ref stallCreate, false))
+            {
+                created.TrySetResult();
+                await releaseCreate.Task;
+            }
+            if (IsStreams(request) && request.Method == HttpMethod.Get && Interlocked.Exchange(ref stallDiscovery, false))
+            {
+                discovered.TrySetResult();
+                await releaseDiscovery.Task;
+            }
+            return response;
+        });
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.StopTimeout = StopTimeout;
+        registrar.Start();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
+        string earlier = _receiverStream.StreamId!;
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+        Assert.Equal(earlier, _receiverStream.StreamId);
+
+        // the second registration creates a stream and stalls; StopAsync() gives it up and the
+        // third finds that stream, and stalls before it publishes it
+        Volatile.Write(ref stallCreate, true);
+        registrar.Start();
+        await created.Task.WaitAsync(Eventually.Default);
+        string streamId = _transmitter.Streams[0]["stream_id"]!.GetValue<string>();
+        await registrar.StopAsync();
+        Volatile.Write(ref stallDiscovery, true);
+        registrar.Start();
+        await discovered.Task.WaitAsync(Eventually.Default);
+
+        // the second returns now: the third has not published, so the stream is left to it, not
+        // deleted for differing from the stream of the first
+        releaseCreate.SetResult();
+        await Eventually.DuringAsync(() => _transmitter.Streams.Count == 1, TimeSpan.FromMilliseconds(300));
+        releaseDiscovery.SetResult();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId == streamId);
+        Assert.Single(_transmitter.Streams);
+        Assert.Equal(SsfStreamRegistrarState.Registered, registrar.State);
+
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
+    public async Task StreamAStoppedRegistrationCreatesAfterTheNextOneLookedIsDeletedOnceTheNextOnePublished()
+    {
+        _transmitter.SeveralStreamsAllowed = true;
+        // the first registration stalls after it looked and found no stream; the second finds none
+        // either, creates a stream and stalls before it publishes; the first then creates a stream
+        // nobody will adopt
+        TaskCompletionSource discovered = NewSignal();
+        TaskCompletionSource releaseDiscovery = NewSignal();
+        bool stallCreate = false;
+        TaskCompletionSource created = NewSignal();
+        TaskCompletionSource releaseCreate = NewSignal();
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            HttpResponseMessage response = await send();
+            if (IsStreams(request) && request.Method == HttpMethod.Get && discovered.TrySetResult())
+            {
+                await releaseDiscovery.Task;
+            }
+            if (IsStreams(request) && request.Method == HttpMethod.Post && Interlocked.Exchange(ref stallCreate, false))
+            {
+                created.TrySetResult();
+                await releaseCreate.Task;
+            }
+            return response;
+        });
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.StopTimeout = StopTimeout;
+        registrar.Start();
+        await discovered.Task.WaitAsync(Eventually.Default);
+        await registrar.StopAsync();
+        Volatile.Write(ref stallCreate, true);
+        registrar.Start();
+        await created.Task.WaitAsync(Eventually.Default);
+        string published = _transmitter.Streams[0]["stream_id"]!.GetValue<string>();
+
+        // the first creates its stream while the second has not published
+        releaseDiscovery.SetResult();
+        await Eventually.UntilAsync(() => _transmitter.Streams.Count == 2);
+        await Eventually.DuringAsync(() => _transmitter.Streams.Count == 2, TimeSpan.FromMilliseconds(300));
+
+        // the second publishes its own stream: the other one is an orphan and goes
+        releaseCreate.SetResult();
+        await Eventually.UntilAsync(() => _transmitter.Streams.Count == 1);
+        Assert.Equal(published, _transmitter.Streams[0]["stream_id"]!.GetValue<string>());
+        Assert.Equal(published, _receiverStream.StreamId);
+
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
+    public async Task StreamWhoseDeletionIsUnderWayIsNotAdoptedByTheNextRegistration()
+    {
+        // the first registration stalls after it looked and found no stream; the second creates a
+        // stream and publishes it; the first then creates an orphan and deletes it, which the
+        // transmitter takes its time for; the registrar is restarted meanwhile
+        _transmitter.SeveralStreamsAllowed = true;
+        TaskCompletionSource discovered = NewSignal();
+        TaskCompletionSource releaseDiscovery = NewSignal();
+        string? second = null;
+        string? orphan = null;
+        TaskCompletionSource deleting = NewSignal();
+        TaskCompletionSource releaseDelete = NewSignal();
+        SsfStreamClient client = InterceptedStreamClient(async (request, send) =>
+        {
+            if (IsStreams(request) && request.Method == HttpMethod.Get && !discovered.Task.IsCompleted)
+            {
+                HttpResponseMessage response = await send();
+                discovered.TrySetResult();
+                await releaseDiscovery.Task;
+                return response;
+            }
+            // the delete of the orphan, the only stream deleted while the second is in use
+            string? inUse = Volatile.Read(ref second);
+            if (request.Method == HttpMethod.Delete && inUse is not null && !request.RequestUri!.Query.Contains(inUse, StringComparison.Ordinal)
+                    && !deleting.Task.IsCompleted)
+            {
+                Volatile.Write(ref orphan, Uri.UnescapeDataString(request.RequestUri.Query.Split("stream_id=")[1].Split('&')[0]));
+                deleting.TrySetResult();
+                await releaseDelete.Task;
+            }
+            return await send();
+        });
+        List<SsfStreamConfiguration> registered = [];
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForManagedStream(client, _receiverStream,
+            SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null));
+        registrar.DeleteOnShutdown = true;
+        registrar.StopTimeout = StopTimeout;
+        registrar.InitialRetryDelay = TimeSpan.FromMilliseconds(50);
+        registrar.AddListener(stream =>
+        {
+            lock (registered)
+            {
+                registered.Add(stream);
+            }
+        });
+        registrar.Start();
+        await discovered.Task.WaitAsync(Eventually.Default);
+        await registrar.StopAsync();
+        registrar.Start();
+        await Eventually.UntilAsync(() => _receiverStream.StreamId is not null);
+        Volatile.Write(ref second, _receiverStream.StreamId);
+
+        // the first creates its stream, an orphan, and gets stuck deleting it
+        releaseDiscovery.SetResult();
+        await deleting.Task.WaitAsync(Eventually.Default);
+        Assert.Equal(2, _transmitter.Streams.Count);
+
+        // restarted while the orphan still exists: the third registration finds it and must not
+        // adopt it, it creates a stream of its own instead
+        await registrar.StopAsync();
+        Assert.Single(_transmitter.Streams);
+        registrar.Start();
+        await Eventually.UntilAsync(() =>
+        {
+            lock (registered)
+            {
+                return registered.Count == 2;
+            }
+        });
+        string? third = _receiverStream.StreamId;
+        Assert.NotEqual(Volatile.Read(ref orphan), third);
+        Assert.NotEqual(second, third);
+
+        releaseDelete.SetResult();
+        await Eventually.UntilAsync(() => _transmitter.Streams.Count == 1);
+        Assert.Equal(third, _transmitter.Streams[0]["stream_id"]!.GetValue<string>());
+
+        await registrar.StopAsync();
+        Assert.Empty(_transmitter.Streams);
+    }
+
+    [Fact]
     public async Task ObtainsNewAccessTokenWhenTheTransmitterRejectsTheCurrentOne()
     {
         Assert.Empty(await _streamClient.GetStreamsAsync());
@@ -339,5 +778,62 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     private SsfStreamRegistrar Registrar(SsfStreamConfiguration desired)
     {
         return SsfStreamRegistrar.ForManagedStream(_streamClient, _receiverStream, desired);
+    }
+
+    /// <summary>
+    /// A stream client whose calls go through the given interceptor, which sends a call on with the
+    /// function it is handed. The cancellation of the registrar's stop does not reach the
+    /// transmitter, as with a handler that does not observe it.
+    /// </summary>
+    private SsfStreamClient InterceptedStreamClient(Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> intercept)
+    {
+        HttpClient http = new(new InterceptingHandler(_transmitter.Handler, intercept)) { Timeout = Timeout.InfiniteTimeSpan };
+        _clients.Add(http);
+        return new SsfStreamClient(http, SsfTransmitterTokenProviders.Fixed(TestTransmitter.DefaultAccessToken),
+            new SsfTransmitterMetadataResolver(_transmitter.Issuer, null, _http));
+    }
+
+    private static bool IsStreams(HttpRequestMessage request)
+    {
+        return request.RequestUri!.AbsolutePath.EndsWith("/streams", StringComparison.Ordinal);
+    }
+
+    private static TaskCompletionSource NewSignal()
+    {
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int current = Volatile.Read(ref target);
+        while (value > current)
+        {
+            int previous = Interlocked.CompareExchange(ref target, value, current);
+            if (previous == current)
+            {
+                return;
+            }
+            current = previous;
+        }
+    }
+
+    private sealed class InterceptingHandler(HttpMessageHandler transmitter,
+            Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> intercept) : HttpMessageHandler
+    {
+        private readonly HttpMessageInvoker _transmitter = new(transmitter, disposeHandler: false);
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return intercept(request, () => _transmitter.SendAsync(request, CancellationToken.None));
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _transmitter.Dispose();
+            }
+            base.Dispose(disposing);
+        }
     }
 }
