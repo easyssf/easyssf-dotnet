@@ -17,6 +17,14 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
 
 ## [Unreleased]
 
+### Security
+
+- The poll endpoint is held to the URI policy of the transmitter's metadata endpoints before the
+  access token is sent to it, whether it was configured (`EasySsf:Receiver:Poll:EndpointUrl`, checked
+  at startup) or taken from the stream configuration the transmitter returned: `https`, or `http` on
+  loopback addresses only, unless `AllowInsecureHttp` is set. The acknowledgements sent on stop pass
+  the same check. New API: `SsfPollerOptions.UriPolicy`.
+
 ### Changed
 
 - `SsfStreamClient` checks the issuer of every stream configuration the transmitter returns, not only
@@ -27,6 +35,9 @@ prereleases follow the Java development line (`0.7.0-alpha.N` alongside `0.7.0-S
 
 ### Fixed
 
+- A SET the poll response lists under a key other than its `jti` (RFC 8936, section 2.4) is reported
+  to the transmitter as `invalid_request` under that key instead of being handled and acknowledged
+  under a key that is not its own. New API: `SsfSetClaims.UnverifiedJti`.
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the

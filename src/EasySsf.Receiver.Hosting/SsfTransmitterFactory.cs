@@ -238,6 +238,7 @@ public static class SsfTransmitterFactory
             LongPollingHold = poll.LongPolling ? poll.LongPollingHold : null,
             RateLimitFallback = poll.RateLimit.FallbackBackoff,
             MaxPause = poll.RateLimit.MaxBackoff,
+            UriPolicy = UriPolicy(options),
         };
         if (ackStore is not null)
         {
@@ -365,6 +366,10 @@ public static class SsfTransmitterFactory
                     + " reaches the push endpoint of this application");
             }
         }
+        if (options.DeliveryMethod == SsfDeliveryMethod.Poll && options.Poll.EndpointUrl is not null)
+        {
+            Check(failures, prefix + "Poll:EndpointUrl", () => policy.CheckEndpoint(options.Poll.EndpointUrl, "The poll endpoint"));
+        }
         if (options.DeliveryMethod == SsfDeliveryMethod.Poll && options.Poll.EndpointUrl is null && !RegistersStream(options))
         {
             failures.Add($"{prefix}Poll:EndpointUrl: POLL delivery needs the poll endpoint of the stream: set {prefix}Poll:EndpointUrl,"
@@ -418,6 +423,14 @@ public static class SsfTransmitterFactory
         Uri? configured = options.Poll.EndpointUrl;
         if (configured is not null)
         {
+            try
+            {
+                UriPolicy(options).CheckEndpoint(configured, "The poll endpoint");
+            }
+            catch (ArgumentException ex)
+            {
+                throw new SsfReceiverConfigurationException(Prefix(name) + "Poll:EndpointUrl", configured, ex.Message);
+            }
             return () => configured;
         }
         if (!RegistersStream(options))

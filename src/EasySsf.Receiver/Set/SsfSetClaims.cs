@@ -22,6 +22,15 @@ public static class SsfSetClaims
 
     /// <param name="encodedSet">the SET as received</param>
     /// <returns>
+    /// the <c>jti</c> claim, <see langword="null"/> if the SET cannot be parsed or has none
+    /// </returns>
+    public static string? UnverifiedJti(string? encodedSet)
+    {
+        return UnverifiedPayload(encodedSet)?.StringMember("jti");
+    }
+
+    /// <param name="encodedSet">the SET as received</param>
+    /// <returns>
     /// the claims of the SET, <see langword="null"/> if the SET is not a JWS in compact
     /// serialization whose payload is a JSON object
     /// </returns>

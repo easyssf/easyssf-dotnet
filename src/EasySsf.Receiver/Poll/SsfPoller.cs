@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using EasySsf.Core;
 using EasySsf.Core.Support;
 using EasySsf.Receiver.Event;
+using EasySsf.Receiver.Metrics;
 using EasySsf.Receiver.Set;
 using EasySsf.Receiver.Transmitter;
 
@@ -40,6 +41,12 @@ namespace EasySsf.Receiver.Poll;
 /// not knowing the endpoint is a condition of the startup, not a request of the transmitter to slow
 /// down. <see cref="WakeUp()"/> ends the pause between two polls altogether; <c>SsfTransmitter</c>
 /// calls it when the stream is registered, so that the first poll follows the registration at once.
+/// </para>
+/// <para>
+/// The poll request carries the access token, so the poll endpoint is held to the
+/// <see cref="SsfPollerOptions.UriPolicy">URI policy</see> of the transmitter's metadata endpoints
+/// before a request goes out: <c>https</c>, or <c>http</c> on loopback addresses only, whether the
+/// endpoint was configured or taken from the stream configuration the transmitter returned.
 /// </para>
 /// </summary>
 public sealed class SsfPoller : IDisposable
@@ -99,6 +106,9 @@ public sealed class SsfPoller : IDisposable
     private volatile string? _lastPollError;
 
     private volatile int _pendingAckCount;
+
+    /// <summary>the endpoint and policy last checked, so that an endpoint is checked once, not per poll</summary>
+    private volatile CheckedEndpoint? _checkedEndpoint;
 
     /// <param name="httpClient">used to call the transmitter</param>
     /// <param name="tokenProvider">provides the access token to authenticate with</param>
@@ -409,6 +419,9 @@ public sealed class SsfPoller : IDisposable
     /// transmitter asked to slow down or a poll is in progress
     /// </returns>
     /// <exception cref="SsfPollException">if the poll request failed</exception>
+    /// <exception cref="ArgumentException">
+    /// if the poll endpoint does not pass the <see cref="SsfPollerOptions.UriPolicy"/>
+    /// </exception>
     public async Task<int> PollNowAsync(CancellationToken cancellationToken = default)
     {
         if (!_polling.Wait(0, CancellationToken.None))
@@ -493,6 +506,20 @@ public sealed class SsfPoller : IDisposable
 
     private async Task ProcessAsync(string key, string jti, string encodedSet, CancellationToken cancellationToken)
     {
+        // the key of a SET in the response is its jti (RFC 8936, section 2.4). A SET listed under
+        // another key would be acknowledged under a key that is not its own, so it is reported under
+        // that key instead of handled; one that does not parse is left to the verifier, which
+        // rejects it the same way
+        string? setJti = SsfSetClaims.UnverifiedJti(encodedSet);
+        if (setJti is not null && setJti != jti)
+        {
+            string message = $"The SET has the jti '{setJti}' but is listed under '{jti}'";
+            _logger.LogWarning("Rejecting polled SET {Jti}: {Reason}", jti, message);
+            _options.Metrics.SetReceived(_options.Transmitter, SsfDeliveryMethod.Poll, SsfSetOutcome.Invalid);
+            await RecordAsync(key, SsfPendingAck.Error(jti, SsfSetVerificationException.InvalidRequest, message), cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
         try
         {
             await _processor.ProcessAsync(encodedSet, SsfDeliveryMethod.Poll, cancellationToken).ConfigureAwait(false);
@@ -521,8 +548,14 @@ public sealed class SsfPoller : IDisposable
         _pendingAckCount = await _options.AckStore.CountAsync(key, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The one method that sends a poll request, for a poll as well as for the acknowledgements
+    /// flushed on <see cref="StopAsync"/>: the endpoint is checked here, so that no path sends the
+    /// access token around the policy.
+    /// </summary>
     private async Task<JsonElement> PollAsync(Uri endpoint, string key, int maxEvents, bool returnImmediately, CancellationToken cancellationToken)
     {
+        CheckEndpoint(endpoint);
         IReadOnlyList<SsfPendingAck> pending = await _options.AckStore.PendingAsync(key, _options.MaxAckBatch, cancellationToken).ConfigureAwait(false);
         JsonArray acks = [];
         JsonObject errors = [];
@@ -627,6 +660,27 @@ public sealed class SsfPoller : IDisposable
     }
 
     /// <summary>
+    /// The access token goes to the endpoint, so the endpoint is held to the URI policy first.
+    /// Checked once per endpoint: the supplier returns the same one request after request, and a
+    /// changed endpoint or policy is checked again.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// if the endpoint does not pass; the poll fails and is tried again at the interval, and the
+    /// message of the exception names the reason
+    /// </exception>
+    private void CheckEndpoint(Uri endpoint)
+    {
+        // compared by the string, as Uri.Equals ignores the fragment, which the policy refuses
+        CheckedEndpoint candidate = new(endpoint.OriginalString, _options.UriPolicy);
+        if (candidate.Equals(_checkedEndpoint))
+        {
+            return;
+        }
+        candidate.Policy.CheckEndpoint(endpoint, "The poll endpoint");
+        _checkedEndpoint = candidate;
+    }
+
+    /// <summary>
     /// Sends the pending acknowledgements with a request that asks for no SETs, best effort.
     /// </summary>
     private async Task FlushAcksAsync(CancellationToken cancellationToken)
@@ -687,6 +741,8 @@ public sealed class SsfPoller : IDisposable
         _polling.Dispose();
         _lifecycle.Dispose();
     }
+
+    private sealed record CheckedEndpoint(string Endpoint, SsfTransmitterUriPolicy Policy);
 
     private readonly record struct PollResult(int Fetched, bool IsSkipped, bool EndpointUnknown)
     {

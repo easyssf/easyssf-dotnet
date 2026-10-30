@@ -280,7 +280,7 @@ it.
 | `TransmitterIssuer` | | Issuer of the transmitter, must match `iss` of every SET. An `https` URL without query or fragment; `http` only on loopback addresses or with `AllowInsecureHttp`. Required unless transmitters are configured by name. |
 | `TransmitterMetadataUrl` | derived | By default `<host>/.well-known/ssf-configuration<issuer-path>` (SSF 1.0, section 7.2), falling back to `<issuer>/.well-known/ssf-configuration`. |
 | `TransmitterJwksUrl` | from metadata | Skips metadata discovery for the keys when set. |
-| `AllowInsecureHttp` | `false` | Accepts `http` for the transmitter issuer and the endpoints it publishes on any host, with a warning on startup. For development only. |
+| `AllowInsecureHttp` | `false` | Accepts `http` for the transmitter issuer, the endpoints it publishes and the poll endpoint on any host, with a warning on startup. For development only. |
 | `ExpectedAudience` | | Every SET must contain it in `aud`. Without it, the audience of the stream the receiver registers or looks up, and SETs that arrive before the stream is known are left for redelivery (503). Without either the receiver refuses to start, unless `SetValidation:AllowAnyAudience` is set. |
 | `DeliveryMethod` | `Push` | `Push` or `Poll`. |
 | `UnderstoodSubjectMembers` | `user, session, device, application, tenant, org_unit, group` | The members of a complex subject the application interprets; a SET with a member the transmitter declared critical that is not listed is rejected. |
@@ -299,7 +299,7 @@ it.
 | `Stream:EventsRequested` | `CaepSessionRevoked`, `CaepCredentialChange` | For a stream managed by the receiver. |
 | `Stream:Description` | | For a stream managed by the receiver. |
 | `Stream:DeleteOnShutdown` | `false` | For a stream managed by the receiver. |
-| `Poll:EndpointUrl` | from the stream | |
+| `Poll:EndpointUrl` | from the stream | Held to the same `https` rule as the transmitter issuer, as the access token is sent to it. |
 | `Poll:AutoStartup` | `true` | Otherwise the application polls by calling `SsfPoller.PollNowAsync()`. |
 | `Poll:Interval` | `00:00:30` | |
 | `Poll:InitialDelay` | `00:00:01` | |
@@ -483,6 +483,10 @@ transmitter.Start();
 // ... on shutdown:
 await transmitter.StopAsync();
 ```
+
+The poller sends the access token only to a poll endpoint that passes `SsfPollerOptions.UriPolicy`,
+`https` or `http` on loopback addresses, whether the endpoint was configured or taken from the
+stream; set it to `SsfTransmitterUriPolicy.Insecure` for a transmitter without TLS in a test setup.
 
 For push delivery, register with `SsfStreamConfiguration.Push(endpointUrl, authorizationHeader,
 events, description)` and leave the poller out; `transmitter.PushAuthorizationHeader` is what
