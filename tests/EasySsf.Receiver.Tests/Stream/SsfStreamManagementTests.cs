@@ -173,6 +173,43 @@ public sealed class SsfStreamManagementTests : IClassFixture<TestTransmitter>, I
     }
 
     [Fact]
+    public async Task RefusesExistingStreamsWithAnotherIssuer()
+    {
+        _transmitter.StreamIssuer = "https://other.example";
+        JsonObject existing = _transmitter.AddStream(SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null).ToJsonObject());
+        string streamId = existing["stream_id"]!.GetValue<string>();
+        await Assert.ThrowsAsync<SsfStreamIssuerMismatchException>(() => _streamClient.GetStreamAsync(streamId));
+        await Assert.ThrowsAsync<SsfStreamIssuerMismatchException>(() => _streamClient.GetStreamsAsync());
+        await Assert.ThrowsAsync<SsfStreamIssuerMismatchException>(
+            () => _streamClient.UpdateStreamAsync(streamId, new JsonObject { ["description"] = "x" }));
+        await Assert.ThrowsAsync<SsfStreamIssuerMismatchException>(
+            () => _streamClient.ReplaceStreamAsync(streamId, SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null)));
+    }
+
+    [Fact]
+    public async Task RegistrarGivesUpOnExistingStreamWithAnotherIssuerWithoutDeletingIt()
+    {
+        _transmitter.StreamIssuer = "https://other.example";
+        JsonObject existing = _transmitter.AddStream(SsfStreamConfiguration.Poll(["CaepSessionRevoked"], null).ToJsonObject());
+        using SsfStreamRegistrar registrar = SsfStreamRegistrar.ForExistingStream(_streamClient, _receiverStream,
+            existing["stream_id"]!.GetValue<string>());
+        registrar.InitialRetryDelay = TimeSpan.FromMilliseconds(50);
+        registrar.Start();
+        try
+        {
+            await Eventually.UntilAsync(() => registrar.State == SsfStreamRegistrarState.Failed);
+        }
+        finally
+        {
+            await registrar.StopAsync();
+        }
+        Assert.Contains("https://other.example", registrar.LastError);
+        Assert.Null(_receiverStream.StreamId);
+        // the stream is not this registrar's to delete
+        Assert.Single(_transmitter.Streams);
+    }
+
+    [Fact]
     public async Task ObtainsNewAccessTokenWhenTheTransmitterRejectsTheCurrentOne()
     {
         Assert.Empty(await _streamClient.GetStreamsAsync());

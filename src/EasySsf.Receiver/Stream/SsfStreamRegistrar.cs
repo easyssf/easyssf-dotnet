@@ -226,11 +226,10 @@ public sealed class SsfStreamRegistrar : IDisposable
             }
             catch (SsfStreamIssuerMismatchException ex)
             {
-                // trying again would only create another stream that must not be used
+                // trying again would only find or create the same stream
                 _logger.LogError("Not using the SSF stream: {Reason}", ex.Message);
                 _lastError = ex.Message;
                 _state = SsfStreamRegistrarState.Failed;
-                await DeleteQuietlyAsync(ex.Stream.StreamId, cancellationToken).ConfigureAwait(false);
                 return;
             }
             catch (Exception ex)
@@ -260,6 +259,10 @@ public sealed class SsfStreamRegistrar : IDisposable
     /// </summary>
     /// <returns>the stream</returns>
     /// <exception cref="SsfStreamException">if the transmitter could not be called</exception>
+    /// <exception cref="SsfStreamIssuerMismatchException">
+    /// if the stream has another issuer than the transmitter; a stream created on the way is
+    /// deleted again, one that existed is left alone
+    /// </exception>
     public async Task<SsfStreamConfiguration> RegisterAsync(CancellationToken cancellationToken = default)
     {
         SsfStreamConfiguration stream;
@@ -290,7 +293,14 @@ public sealed class SsfStreamRegistrar : IDisposable
                     stream = await _streamClient.CreateStreamAsync(_desiredStream, cancellationToken).ConfigureAwait(false);
                     action = "Created";
                 }
-                catch (SsfStreamException ex) when (ex is not SsfStreamIssuerMismatchException && ex.StatusCode == 409 && streams.Count == 1)
+                catch (SsfStreamIssuerMismatchException ex)
+                {
+                    // the stream was created but must not be used, and trying again would only
+                    // create another one
+                    await DeleteQuietlyAsync(ex.Stream.StreamId, cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
+                catch (SsfStreamException ex) when (ex.StatusCode == 409 && streams.Count == 1)
                 {
                     // the transmitter allows a single stream per receiver and it is configured differently
                     stream = await _streamClient.UpdateStreamAsync(streams[0].StreamId!, Changes(), cancellationToken).ConfigureAwait(false);

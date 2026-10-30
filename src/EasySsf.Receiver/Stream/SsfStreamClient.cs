@@ -13,7 +13,9 @@ namespace EasySsf.Receiver.Stream;
 
 /// <summary>
 /// Client for the stream management API of the transmitter (SSF 1.0, section 8.1). The endpoints
-/// are discovered from the transmitter metadata.
+/// are discovered from the transmitter metadata. Every stream configuration the transmitter returns
+/// is checked to carry the issuer of the metadata before it is accepted (section 8.1.1): the SETs of
+/// a stream with another issuer would not verify.
 /// </summary>
 public sealed class SsfStreamClient
 {
@@ -41,6 +43,7 @@ public sealed class SsfStreamClient
     /// <summary>
     /// The streams of this receiver.
     /// </summary>
+    /// <exception cref="SsfStreamIssuerMismatchException">if a stream has another issuer than the transmitter</exception>
     public async Task<IReadOnlyList<SsfStreamConfiguration>> GetStreamsAsync(CancellationToken cancellationToken = default)
     {
         Uri endpoint = await ConfigurationEndpointAsync(cancellationToken).ConfigureAwait(false);
@@ -68,13 +71,22 @@ public sealed class SsfStreamClient
         {
             throw new SsfStreamException("The transmitter returned an invalid list of streams", 0, null);
         }
+        foreach (SsfStreamConfiguration stream in streams)
+        {
+            await CheckIssuerAsync(stream, cancellationToken).ConfigureAwait(false);
+        }
         return streams;
     }
 
+    /// <summary>
+    /// The stream with the given identifier.
+    /// </summary>
+    /// <exception cref="SsfStreamIssuerMismatchException">if the stream has another issuer than the transmitter</exception>
     public async Task<SsfStreamConfiguration> GetStreamAsync(string streamId, CancellationToken cancellationToken = default)
     {
         Uri endpoint = WithStreamId(await ConfigurationEndpointAsync(cancellationToken).ConfigureAwait(false), streamId);
-        return new SsfStreamConfiguration(await ExchangeObjectAsync(HttpMethod.Get, endpoint, null, cancellationToken).ConfigureAwait(false));
+        SsfStreamConfiguration stream = new(await ExchangeObjectAsync(HttpMethod.Get, endpoint, null, cancellationToken).ConfigureAwait(false));
+        return await CheckIssuerAsync(stream, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -91,12 +103,7 @@ public sealed class SsfStreamClient
         ArgumentNullException.ThrowIfNull(stream);
         Uri endpoint = await ConfigurationEndpointAsync(cancellationToken).ConfigureAwait(false);
         SsfStreamConfiguration created = new(await ExchangeObjectAsync(HttpMethod.Post, endpoint, stream.ToJsonObject(), cancellationToken).ConfigureAwait(false));
-        string issuer = (await _metadataResolver.ResolveAsync(cancellationToken).ConfigureAwait(false)).Issuer;
-        if (issuer != created.Issuer)
-        {
-            throw new SsfStreamIssuerMismatchException(issuer, created);
-        }
-        return created;
+        return await CheckIssuerAsync(created, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -105,21 +112,40 @@ public sealed class SsfStreamClient
     /// <param name="streamId">the stream</param>
     /// <param name="changes">the members to change</param>
     /// <param name="cancellationToken">cancels the call</param>
+    /// <exception cref="SsfStreamIssuerMismatchException">if the stream has another issuer than the transmitter</exception>
     public async Task<SsfStreamConfiguration> UpdateStreamAsync(string streamId, JsonObject changes, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(changes);
         Uri endpoint = await ConfigurationEndpointAsync(cancellationToken).ConfigureAwait(false);
-        return new SsfStreamConfiguration(await ExchangeObjectAsync(HttpMethod.Patch, endpoint, WithStreamId(changes, streamId), cancellationToken).ConfigureAwait(false));
+        SsfStreamConfiguration updated = new(await ExchangeObjectAsync(HttpMethod.Patch, endpoint, WithStreamId(changes, streamId), cancellationToken).ConfigureAwait(false));
+        return await CheckIssuerAsync(updated, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Replaces the configuration of a stream.
     /// </summary>
+    /// <exception cref="SsfStreamIssuerMismatchException">if the stream has another issuer than the transmitter</exception>
     public async Task<SsfStreamConfiguration> ReplaceStreamAsync(string streamId, SsfStreamConfiguration stream, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
         Uri endpoint = await ConfigurationEndpointAsync(cancellationToken).ConfigureAwait(false);
-        return new SsfStreamConfiguration(await ExchangeObjectAsync(HttpMethod.Put, endpoint, WithStreamId(stream.ToJsonObject(), streamId), cancellationToken).ConfigureAwait(false));
+        SsfStreamConfiguration replaced = new(await ExchangeObjectAsync(HttpMethod.Put, endpoint, WithStreamId(stream.ToJsonObject(), streamId), cancellationToken).ConfigureAwait(false));
+        return await CheckIssuerAsync(replaced, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A stream belongs to the transmitter the metadata was obtained from (SSF 1.0, section 8.1.1,
+    /// <c>iss</c>); SETs of a stream with another issuer would not verify against that
+    /// transmitter's keys and issuer, so such a stream is refused wherever it comes from.
+    /// </summary>
+    private async Task<SsfStreamConfiguration> CheckIssuerAsync(SsfStreamConfiguration stream, CancellationToken cancellationToken)
+    {
+        string issuer = (await _metadataResolver.ResolveAsync(cancellationToken).ConfigureAwait(false)).Issuer;
+        if (issuer != stream.Issuer)
+        {
+            throw new SsfStreamIssuerMismatchException(issuer, stream);
+        }
+        return stream;
     }
 
     public async Task DeleteStreamAsync(string streamId, CancellationToken cancellationToken = default)
